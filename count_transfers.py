@@ -20,6 +20,7 @@ if __name__ == '__main__':
         order by dst_institution, count desc
       """
       cursor.execute(query)
+      # Write results as a CSV file to stdout.
       print('To,From,Course,Count')
       for row in cursor.fetchall():
         if int(row.count) > 5:
