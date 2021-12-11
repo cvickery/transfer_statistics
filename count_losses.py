@@ -1,6 +1,5 @@
 #! /usr/local/bin/python3
-""" Query the transfer rules to count number of rules where the receiving side is all BKCR and/or
-    MESG.
+""" Query the transfer rules to count number of rules where the receiving side is all BKCR.
 """
 
 import os
@@ -13,11 +12,12 @@ from psycopg.rows import namedtuple_row
 colleges = ['BAR', 'BCC', 'BKL', 'BMC', 'CSI', 'CTY', 'HOS', 'HTR', 'JJC', 'KCC',
             'LAG', 'LEH', 'MEC', 'NCC', 'NYT', 'QCC', 'QNS', 'SLU', 'SPS', 'YRK']
 ignore = ['GRD', 'LAW', 'SPH']
-sorted
+
 lost = {}
 okay = {}
 totals = {}
 
+# Initialize counters
 for src in colleges:
   lost[src] = Counter(colleges)
   okay[src] = Counter(colleges)
@@ -46,7 +46,7 @@ if __name__ == '__main__':
         if src in ignore or dst in ignore:
           continue
         totals[src][dst] += 1
-        if 'false' not in rule.mesg and 'false' not in rule.bkcr:
+        if 'false' not in rule.bkcr:
           lost[src][dst] += 1
 
       print('SRC\\DST', ''.join([f'{c:>7}' for c in colleges]))
