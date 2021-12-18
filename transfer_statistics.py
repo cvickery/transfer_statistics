@@ -112,9 +112,11 @@ if __name__ == '__main__':
             print(f'\r  {len(rule_counts):,} / {len(only_bkcr[dest]):,}', end='')
             rule_counts.append(len(rules_list))
             course_rules[(row.course_id, row.offer_nbr, dest)] = rules_list
+          # break  # after first chunk
         print('\r' + 80 * ' ' + f'\r  {elapsed(dest_start)}\n'
               f'  min: {min_count}\n  max: {max_count}\n'
               f'  avg: {(sum(rule_counts) / len(rule_counts)):0.3f}')
+        # break  # after Baruch
 
       print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
       populate_start = time.time()
@@ -124,6 +126,7 @@ if __name__ == '__main__':
         create table bkcr_course_rules (
         course_id int,
         offer_nbr int,
+        destination text,
         rules text,
         primary key (course_id, offer_nbr)
         )
@@ -131,12 +134,19 @@ if __name__ == '__main__':
         counter = 0
         total = len(course_rules)
         for key, value in course_rules.items():
+          dests = set()
+          dests.add(key[2].upper())
+          for rule in value:
+            parts = rule.split(':')
+            dests.add(parts[1])
+          assert len(dests) == 1, f'{key} {value} {dests}'
           counter += 1
-          print(f'\r  {counter:,} / {total:,}')
+          print(f'\r  {counter:,} / {total:,}', end='')
           cursor.execute("""
-          insert into bkcr_course_rules values (%s, %s, %s)
-          """, (key) + (value,))
-      print(f'Polulate took {elapsed(populate_start)}')
+          insert into bkcr_course_rules values (%s, %s, %s, %s)
+          """, (key) + (' '.join(value),))
+        conn.commit()
+      print(f'\nPolulate took {elapsed(populate_start)}')
       exit()
 
   # Now go through the transfer evaluations and count how often the courses with a bkcr-only rule
