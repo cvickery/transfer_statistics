@@ -13,18 +13,15 @@ colleges = ['BAR', 'BCC', 'BKL', 'BMC', 'CSI', 'CTY', 'HOS', 'HTR', 'JJC', 'KCC'
             'LAG', 'LEH', 'MEC', 'NCC', 'NYT', 'QCC', 'QNS', 'SLU', 'SPS', 'YRK']
 ignore = ['GRD', 'LAW', 'SPH']
 
-lost = {}
-okay = {}
+all_bkcr = {}
 totals = {}
 
 # Initialize counters
 for src in colleges:
-  lost[src] = Counter(colleges)
-  okay[src] = Counter(colleges)
+  all_bkcr[src] = Counter(colleges)
   totals[src] = Counter(colleges)
   for dst in colleges:
-    lost[src][dst] = 0
-    okay[src][dst] = 0
+    all_bkcr[src][dst] = 0
     totals[src][dst] = 0
 
 if __name__ == '__main__':
@@ -47,21 +44,21 @@ if __name__ == '__main__':
           continue
         totals[src][dst] += 1
         if 'false' not in rule.bkcr:
-          lost[src][dst] += 1
+          all_bkcr[src][dst] += 1
 
-      print('SRC\\DST', ''.join([f'{c:>7}' for c in colleges]))
+      print('    SRC\\DST', ''.join([f'{c:>7}' for c in colleges]))
       for src in sorted(totals.keys()):
         # print('       ', ''.join([f'{k:>7}' for k in sorted(totals[src].keys())]))
-        print(f'{src:>7} ', end='')
+        print(f'{src:>11} ', end='')
         for dst in sorted(totals[src].keys()):
           print(f'{totals[src][dst]:>7}', end='')
-        print('\n # lost ', end='')
-        for dst in sorted(lost[src].keys()):
-          print(f'{lost[src][dst]:>7}', end='')
-        print('\n % lost ', end='')
-        for dst in sorted(lost[src].keys()):
+        print('\n # all_bkcr ', end='')
+        for dst in sorted(all_bkcr[src].keys()):
+          print(f'{all_bkcr[src][dst]:>7}', end='')
+        print('\n % all_bkcr ', end='')
+        for dst in sorted(all_bkcr[src].keys()):
           try:
-            print(f'{100 * (lost[src][dst] / totals[src][dst]):>7.1f}', end='')
+            print(f'{100 * (all_bkcr[src][dst] / totals[src][dst]):>7.1f}', end='')
           except ZeroDivisionError:
             print('     --', end='')
         print()
