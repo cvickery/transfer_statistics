@@ -128,7 +128,7 @@ if __name__ == '__main__':
         offer_nbr int,
         destination text,
         rules text,
-        primary key (course_id, offer_nbr)
+        primary key (course_id, offer_nbr, destination)
         )
         """)
         counter = 0
