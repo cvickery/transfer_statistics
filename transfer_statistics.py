@@ -119,35 +119,39 @@ if __name__ == '__main__':
         # break  # after Baruch
 
       print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
-      populate_start = time.time()
-      with conn.cursor() as cursor:
-        cursor.execute("""
-        drop table if exists bkcr_course_rules;
-        create table bkcr_course_rules (
-        course_id int,
-        offer_nbr int,
-        destination text,
-        rules text,
-        primary key (course_id, offer_nbr, destination)
-        )
-        """)
+
+  with psycopg.connect('dbname=cuny_curriculum') as conn:
+    conn.autocommit = True
+    populate_start = time.time()
+    with conn.cursor() as cursor:
+      cursor.execute("""
+      drop table if exists bkcr_course_rules;
+      create table bkcr_course_rules (
+      course_id int,
+      offer_nbr int,
+      destination text,
+      rules text,
+      primary key (course_id, offer_nbr, destination)
+      )
+      """)
+      with cursor.copy('copy bkcr_course_rules (course_id, offer_nbr, destination, rules) '
+                       'from stdin') as copy:
         counter = 0
         total = len(course_rules)
         for key, value in course_rules.items():
           dests = set()
-          dests.add(key[2].upper())
+          this_dest = key[2].upper()
+          dests.add(this_dest)
           for rule in value:
             parts = rule.split(':')
             dests.add(parts[1])
           assert len(dests) == 1, f'{key} {value} {dests}'
           counter += 1
           print(f'\r  {counter:,} / {total:,}', end='')
-          cursor.execute("""
-          insert into bkcr_course_rules values (%s, %s, %s, %s)
-          """, (key) + (' '.join(value),))
-        conn.commit()
-      print(f'\nPolulate took {elapsed(populate_start)}')
-      exit()
+          values = (key) + (' '.join(value),)
+          copy.write_row(values)
+    print(f'\nPopulate took {elapsed(populate_start)}')
+  exit()
 
   # Now go through the transfer evaluations and count how often the courses with a bkcr-only rule
   # transferred as (a) bkcr and (b) with other destination course ids.
