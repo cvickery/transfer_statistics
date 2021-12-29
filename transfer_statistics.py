@@ -53,18 +53,7 @@ if __name__ == '__main__':
 
   args = parser.parse_args()
   if args.build_bkcr_only:
-    latest_query = None
-    query_files = Path('./downloads/').glob('*csv')
-    for query_file in query_files:
-      if latest_query is None:
-        latest_query = query_file
-        latest_timestamp = query_file.stat().st_mtime
-      else:
-        this_timestamp = query_file.stat().st_mtime
-        if this_timestamp > latest_timestamp:
-          latest_query = query_file
-          latest_timestamp = this_timestamp
-    print(f'Using {latest_query.name}\nBuild bkcr-only Dict')
+    print('Building bkcr-only Dict')
     session_start = time.time()
 
     # Create list of (course_id, offer_nbr, dst) tuples where the course appears is part of a rule
@@ -166,8 +155,51 @@ if __name__ == '__main__':
         print(f'\nPopulate took {elapsed(populate_start)}')
 
   if args.count_transfers:
-    # Now go through the transfer evaluations and count how often the courses with a bkcr-only rule
+    # Go through the transfer evaluations and count how often the courses with a bkcr-only rule
     # transferred as (a) bkcr and (b) with other destination course ids.
+    print('Count BKCR transfers')
+    print('  Cache bkcr_course_rules table')
+    count_start = time.time()
+
+    # Cache the bkcr_only_rules table
+    RuleInfo = namedtuple('RuleInfo', 'source num_rules')
+    bkcr_rules = dict()
+    with psycopg.connect('dbname=cuny_curriculum') as conn:
+      with conn.cursor(row_factory=namedtuple_row) as cursor:
+        cursor.execute('select * from bkcr_course_rules')
+        for row in cursor:
+          bkcr_rules[(f'{row.course_id:06}',
+                      row.offer_nbr,
+                      row.destination)] = RuleInfo._make([row.source, row.num_rules])
+    print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
+    latest_query = None
+    query_files = Path('./downloads/').glob('*csv')
+    for query_file in query_files:
+      if latest_query is None:
+        latest_query = query_file
+        latest_timestamp = query_file.stat().st_mtime
+      else:
+        this_timestamp = query_file.stat().st_mtime
+        if this_timestamp > latest_timestamp:
+          latest_query = query_file
+          latest_timestamp = this_timestamp
+    print(f'  Lookup transfers using {latest_query.name}')
+    lookup_start = time.time()
+    with open(latest_query, newline='', errors='replace') as query_file:
+      reader = csv.reader(query_file)
+      for line in reader:
+        if reader.line_num == 1:
+          Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
+        else:
+          row = Row._make(line)
+          key = (f'{int(row.src_course_id):06}', row.src_offer_nbr, row.dst_institution)
+          try:
+            print(bkcr_rules[key])
+            exit(row)
+          except KeyError as ke:
+            pass
+    print(f'  Lookup complete', elapsed(lookup_start))
+    exit()
 
     # Dict key is (src_course, dst_institution)
     # names for fields
