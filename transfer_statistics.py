@@ -10,6 +10,7 @@
 
 import argparse
 import csv
+import subprocess
 import os
 import psycopg
 import sys
@@ -19,8 +20,11 @@ from collections import defaultdict, namedtuple
 from datetime import datetime
 from pathlib import Path
 from psycopg.rows import namedtuple_row
+from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
+
+DstCourse = recordclass('DstCourse', 'flags count')
 
 
 def stats_factory():
@@ -28,7 +32,14 @@ def stats_factory():
           'src_institution': 'unknown',
           'total_transfers': 0,
           'distinct_transfers': 0}
-  # return Stats._make([set(), set(), 0, 0])._asdict()
+
+
+def dst_course_factory():
+  return defaultdict(course_set_factory)
+
+
+def course_set_factory():
+  return DstCourse._make(('', 0))
 
 
 def dd_factory():
@@ -176,7 +187,21 @@ if __name__ == '__main__':
           bkcr_rules[(row.course_id,
                       row.offer_nbr,
                       row.destination)] = RuleInfo._make([row.source, row.num_rules])
-    print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
+        print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
+
+        # Cache status of all bkcr_courses
+        count_start = time.time()
+        bkcr_courses = dict()
+        cursor.execute("""
+        select course_id, offer_nbr, course_status as status
+        from cuny_courses
+        where attributes ~* 'BKCR'
+        """)
+        for row in cursor:
+          bkcr_courses[(int(row.course_id), int(row.offer_nbr))] = row.status
+        # for key, value in bkcr_courses.items():
+        #   print(key, value, file=sys.stderr)
+        print(f'  {len(bkcr_courses):,} courses took {elapsed(count_start)}')
 
     latest_query = None
     query_files = Path('./downloads/').glob('*csv')
@@ -192,9 +217,10 @@ if __name__ == '__main__':
     print(f'  Lookup transfers using {latest_query.name}')
     lookup_start = time.time()
 
-    report = open(f"reports/{datetime.now().isoformat()[0:16].replace('T', '_')}.txt", 'w')
+    report_name = f"./reports/{datetime.now().isoformat()[0:16].replace('T', '_')}.txt"
+    report = open(report_name, 'w')
     num_transfers = defaultdict(int)
-    dst_courses = defaultdict(set)
+    dst_courses = defaultdict(dst_course_factory)
     with open(latest_query, newline='', errors='replace') as query_file:
       reader = csv.reader(query_file)
       for line in reader:
@@ -207,28 +233,23 @@ if __name__ == '__main__':
             src_institution = bkcr_rules[key].source
             src_course = f'{row.src_subject:>6} {row.src_catalog_nbr.strip():<5}'
             dst_course = f'{row.dst_subject:>6} {row.dst_catalog_nbr.strip():<5}'.strip()
-            dst_course_id = int(row.src_course_id)
-            dst_offer_nbr = int(row.src_offer_nbr)
-            with psycopg.connect('dbname=cuny_curriculum') as conn:
-              with conn.cursor(row_factory=namedtuple_row) as cursor:
-                cursor.execute("""
-                select attributes ~* 'BKCR' as is_bkcr, course_status = 'I' as is_inactive
-                from cuny_courses
-                where course_id = %s
-                  and offer_nbr = %s
-                """, (dst_course_id, dst_offer_nbr))
-                assert cursor.rowcount == 1, (f'{cursor.rowcount} courses for {dst_course_id}:'
-                                              f'{dst_offer_nbr}')
-                course_record = cursor.fetchone()
-                course_info = []
-                if course_record.is_bkcr:
-                  course_info.append('BKCR')
-                if course_record.is_inactive:
-                  course_info.append('Inactive')
-                if course_info:
-                  dst_course += f"({', '.join(course_info)})"
+            dst_course_id = int(row.dst_course_id)
+            dst_offer_nbr = int(row.dst_offer_nbr)
+            try:
+              course_status = bkcr_courses[(dst_course_id, dst_offer_nbr)]
+              course_flags = 'B'
+              if course_status == 'I':
+                course_flags += 'I'
+            except KeyError as ke:
+              course_flags = ''
+
             num_transfers[(src_institution, src_course, row.dst_institution)] += 1
-            dst_courses[(src_institution, src_course, row.dst_institution)].add(dst_course)
+            # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
+            # dst_course recordclass separately from using it.
+            dst_courses[(src_institution, src_course, row.dst_institution)][dst_course]
+            dst_courses[(src_institution, src_course, row.dst_institution)][dst_course].count += 1
+            dst_courses[(src_institution, src_course,
+                         row.dst_institution)][dst_course].flags = course_flags
           except KeyError as ke:
             pass
 
@@ -238,49 +259,20 @@ if __name__ == '__main__':
     for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
       # dst_institution is key[2]
       inst_dicts[key[2]][key] = num_transfers[key]
-    # Sort institution dicts by number of transfers
-    for key, value in inst_dicts.items():
-      for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
-        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} = {v:6,} {len(dst_courses[k])} courses: '
-              f"{', '.join([c for c in dst_courses[k]])}", file=report)
 
+    # Write the institution dicts to txt and csv, sorted by decreasing frequency
+    with open(report_name.replace('txt', 'csv'), 'w', newline='') as csv_file:
+      writer = csv.writer(csv_file)
+      writer.writerow(['Receiving College', 'Sending College', 'Course', 'Count',
+                       'Receiving Courses'])
+      for key, value in inst_dicts.items():
+        for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+          print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: '
+                f"{', '.join([f'{c} [{v.count:,}]{v.flags}' for c, v in dst_courses[k].items()])}",
+                file=report)
+          receivers = '\n'.join([f'{c} [{v.count:,}] {v.flags}'for c, v in dst_courses[k].items()])
+          writer.writerow([key[0:3], k[0][0:3], k[1], v, receivers])
+    print(report_name)
+    subprocess.run("pbcopy", universal_newlines=True, input=f'm {report_name}')
     exit()
 
-    # Dict key is (src_course, dst_institution)
-    # names for fields
-    src_institution = 'src_institution'
-    total_transfers = 'total_transfers'
-    student_ids = 'student_ids'
-    distinct_transfers = 'distinct_transfers'
-    stats = defaultdict(stats_factory)
-
-    with open(latest_query, 'r', newline='', errors='replace') as csv_file:
-      csv_reader = csv.reader(csv_file)
-      for line in csv_reader:
-        if csv_reader.line_num == 1:
-          cols = [c.lower().replace(' ', '_') for c in line]
-          Row = namedtuple('Row', cols)
-        else:
-          row = Row._make(line)
-          course = f'{row.src_course_id:06}:{row.src_offer_nbr}'
-          dst = row.dst_institution[0:3]
-          key = (course, dst)
-          stats[key][src_institution] = row.src_institution[0:3]
-          stats[key][total_transfers] += 1
-          if row.student_id in stats[key][student_ids]:
-            pass
-          else:
-            stats[key][student_ids].add(row.student_id)
-            stats[key][distinct_transfers] += 1
-
-    with open('./reports/count_transfers_raw.csv', 'w') as csv_file:
-      csv_writer = csv.writer(csv_file)
-      csv_writer.writerow(['To', 'From', 'Course', 'Actual Count', 'Total Count'])
-
-      for key, value in stats.items():
-        course, dst = key
-        csv_writer.writerow([dst,
-                            value[src_institution],
-                            course,
-                            value[distinct_transfers],
-                            value[total_transfers]])
