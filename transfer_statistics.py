@@ -16,6 +16,7 @@ import sys
 import time
 
 from collections import defaultdict, namedtuple
+from datetime import datetime
 from pathlib import Path
 from psycopg.rows import namedtuple_row
 
@@ -28,6 +29,10 @@ def stats_factory():
           'total_transfers': 0,
           'distinct_transfers': 0}
   # return Stats._make([set(), set(), 0, 0])._asdict()
+
+
+def dd_factory():
+  return defaultdict(int)
 
 
 def chunks(lst, n):
@@ -56,7 +61,7 @@ if __name__ == '__main__':
     print('Building bkcr-only Dict')
     session_start = time.time()
 
-    # Create list of (course_id, offer_nbr, dst) tuples where the course appears is part of a rule
+    # Create list of (course_id, offer_nbr, dst) tuples where the course appears as part of a rule
     # that transfers only as BKCR.
     with psycopg.connect('dbname=cuny_curriculum') as conn:
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -168,10 +173,11 @@ if __name__ == '__main__':
       with conn.cursor(row_factory=namedtuple_row) as cursor:
         cursor.execute('select * from bkcr_course_rules')
         for row in cursor:
-          bkcr_rules[(f'{row.course_id:06}',
+          bkcr_rules[(row.course_id,
                       row.offer_nbr,
                       row.destination)] = RuleInfo._make([row.source, row.num_rules])
     print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
+
     latest_query = None
     query_files = Path('./downloads/').glob('*csv')
     for query_file in query_files:
@@ -185,6 +191,10 @@ if __name__ == '__main__':
           latest_timestamp = this_timestamp
     print(f'  Lookup transfers using {latest_query.name}')
     lookup_start = time.time()
+
+    report = open(f"reports/{datetime.now().isoformat()[0:16].replace('T', '_')}.txt", 'w')
+    num_transfers = defaultdict(int)
+    dst_courses = defaultdict(set)
     with open(latest_query, newline='', errors='replace') as query_file:
       reader = csv.reader(query_file)
       for line in reader:
@@ -192,13 +202,48 @@ if __name__ == '__main__':
           Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
         else:
           row = Row._make(line)
-          key = (f'{int(row.src_course_id):06}', row.src_offer_nbr, row.dst_institution)
+          key = (int(row.src_course_id), int(row.src_offer_nbr), row.dst_institution)
           try:
-            print(bkcr_rules[key])
-            exit(row)
+            src_institution = bkcr_rules[key].source
+            src_course = f'{row.src_subject:>6} {row.src_catalog_nbr.strip():<5}'
+            dst_course = f'{row.dst_subject:>6} {row.dst_catalog_nbr.strip():<5}'.strip()
+            dst_course_id = int(row.src_course_id)
+            dst_offer_nbr = int(row.src_offer_nbr)
+            with psycopg.connect('dbname=cuny_curriculum') as conn:
+              with conn.cursor(row_factory=namedtuple_row) as cursor:
+                cursor.execute("""
+                select attributes ~* 'BKCR' as is_bkcr, course_status = 'I' as is_inactive
+                from cuny_courses
+                where course_id = %s
+                  and offer_nbr = %s
+                """, (dst_course_id, dst_offer_nbr))
+                assert cursor.rowcount == 1, (f'{cursor.rowcount} courses for {dst_course_id}:'
+                                              f'{dst_offer_nbr}')
+                course_record = cursor.fetchone()
+                course_info = []
+                if course_record.is_bkcr:
+                  course_info.append('BKCR')
+                if course_record.is_inactive:
+                  course_info.append('Inactive')
+                if course_info:
+                  dst_course += f"({', '.join(course_info)})"
+            num_transfers[(src_institution, src_course, row.dst_institution)] += 1
+            dst_courses[(src_institution, src_course, row.dst_institution)].add(dst_course)
           except KeyError as ke:
             pass
+
     print(f'  Lookup complete', elapsed(lookup_start))
+    # Create separate dicts for institutions
+    inst_dicts = defaultdict(dd_factory)
+    for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
+      # dst_institution is key[2]
+      inst_dicts[key[2]][key] = num_transfers[key]
+    # Sort institution dicts by number of transfers
+    for key, value in inst_dicts.items():
+      for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} = {v:6,} {len(dst_courses[k])} courses: '
+              f"{', '.join([c for c in dst_courses[k]])}", file=report)
+
     exit()
 
     # Dict key is (src_course, dst_institution)
