@@ -18,13 +18,15 @@ import time
 
 from collections import defaultdict, namedtuple
 from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font
 from pathlib import Path
 from psycopg.rows import namedtuple_row
 from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
-DstCourse = recordclass('DstCourse', 'flags count')
+DstCourse = recordclass('DstCourse', 'flags count rules')
 
 
 def stats_factory():
@@ -39,7 +41,7 @@ def dst_course_factory():
 
 
 def course_set_factory():
-  return DstCourse._make(('', 0))
+  return DstCourse._make(('', 0, ''))
 
 
 def dd_factory():
@@ -178,7 +180,7 @@ if __name__ == '__main__':
     count_start = time.time()
 
     # Cache the bkcr_only_rules table
-    RuleInfo = namedtuple('RuleInfo', 'source num_rules')
+    RuleInfo = namedtuple('RuleInfo', 'source rules')
     bkcr_rules = dict()
     with psycopg.connect('dbname=cuny_curriculum') as conn:
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -186,7 +188,7 @@ if __name__ == '__main__':
         for row in cursor:
           bkcr_rules[(row.course_id,
                       row.offer_nbr,
-                      row.destination)] = RuleInfo._make([row.source, row.num_rules])
+                      row.destination)] = RuleInfo._make([row.source, row.rules])
         print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
 
         # Cache status of all bkcr_courses
@@ -217,7 +219,7 @@ if __name__ == '__main__':
     print(f'  Lookup transfers using {latest_query.name}')
     lookup_start = time.time()
 
-    report_name = f"./reports/{datetime.now().isoformat()[0:16].replace('T', '_')}.txt"
+    report_name = f"./reports/{datetime.now().isoformat()[0:10]}.txt"
     report = open(report_name, 'w')
     num_transfers = defaultdict(int)
     dst_courses = defaultdict(dst_course_factory)
@@ -237,7 +239,7 @@ if __name__ == '__main__':
             dst_offer_nbr = int(row.dst_offer_nbr)
             try:
               course_status = bkcr_courses[(dst_course_id, dst_offer_nbr)]
-              course_flags = 'B'
+              course_flags = ' B'
               if course_status == 'I':
                 course_flags += 'I'
             except KeyError as ke:
@@ -245,35 +247,70 @@ if __name__ == '__main__':
 
             num_transfers[(src_institution, src_course, row.dst_institution)] += 1
             # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
-            # dst_course recordclass separately from using it.
+            # dst_course recordclass separately from updating it.
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course]
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course].count += 1
+
             dst_courses[(src_institution, src_course,
                          row.dst_institution)][dst_course].flags = course_flags
+            dst_courses[(src_institution, src_course,
+                         row.dst_institution)][dst_course].rules = bkcr_rules[key].rules
           except KeyError as ke:
             pass
-
     print(f'  Lookup complete', elapsed(lookup_start))
-    # Create separate dicts for institutions
+
+    # Create separate dict for each college
     inst_dicts = defaultdict(dd_factory)
     for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
       # dst_institution is key[2]
       inst_dicts[key[2]][key] = num_transfers[key]
 
     # Write the institution dicts to txt and csv, sorted by decreasing frequency
-      for key, value in inst_dicts.items():
-        with open(f'./reports/{key[0:3]}_Transfers.csv', 'w', newline='') as csv_file:
-          writer = csv.writer(csv_file)
-          writer.writerow(['Sending College', 'Course', 'Count', 'Receiving Courses'])
-          for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
-            receivers = ', '.join([f'{c} [{v.count:,}] {v.flags}'
-                                   for c, v in dst_courses[k].items()])
-            print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
-            # receivers = '\n'.join([f'{c} [{v.count:,}] {v.flags}'
-            #                        for c, v in dst_courses[k].items()])
-            receivers = receivers.replace(', ', '\n')
-            writer.writerow([k[0][0:3], k[1], v, receivers])
+    for key, value in inst_dicts.items():
+      with open(f'./reports/{key[0:3]}_Transfers.csv', 'w', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(['Sending College', 'Course', 'Count', 'Receiving Courses', 'Rules'])
+        for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+          receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
+                                 for c, v in dst_courses[k].items()])
+          print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
+          receivers = receivers.replace(', ', '\n')
+          # Create list of all rules that _might_ have been involved in transferring this course
+          all_rules = [v.rules.split() for v in dst_courses[k].values()]
+          rules_set = set()
+          for sublist in all_rules:
+            for rule_str in sublist:
+              rules_set.add(rule_str)
+          writer.writerow([k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))])
     print(report_name)
     subprocess.run("pbcopy", universal_newlines=True, input=f'm {report_name}')
     exit()
 
+
+centered = Alignment('center')
+bold = Font(bold=True)
+wb = Workbook()
+for event_pair in event_pairs:
+  earlier, later = event_pair
+  ws = wb.create_sheet(f'{event_names[earlier][0:14]} to {event_names[later][0:14]}')
+
+  headings = [''] + institutions
+  row = 1
+  for col in range(len(headings)):
+    ws.cell(row, col + 1, headings[col]).font = bold
+    ws.cell(row, col + 1, headings[col]).alignment = centered
+
+  for admit_term in admit_terms:
+    row += 1
+    ws.cell(row, 2, str(admit_term))
+    ws.merge_cells(start_row=row, end_row=row, start_column=2, end_column=len(headings))
+    ws.cell(row, 2).font = bold
+    ws.cell(row, 2).alignment = centered
+
+    # Everbody should have an N value
+    row += 1
+    ws.cell(row, 1, 'N').font = bold
+    values = [stat_values[institution][admit_term.term][event_pair].n
+              for institution in institutions]
+    for col in range(2, 2 + len(headings) - 1):
+      ws.cell(row, col).value = values[col - 2]

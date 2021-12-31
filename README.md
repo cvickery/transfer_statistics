@@ -66,7 +66,8 @@ any advisor overrides for the course.
 
 As mentioned above, there are 1,353,241 transfer rules where a course transfers only as a single
 blanket-credit course. Of those cases, 1,348,553 (99.7%) have no other rules for how the course
-transfers.
+transfers, but there may be as many as eight rules covering different ways in which a single course
+might transfer to a particular college:
 
   Num Rules | Count
  --:+--:
@@ -79,4 +80,4 @@ transfers.
   7 |        1
   8 |       57
 
-
+The attached spreadsheet was produced by running `transfer_statistics` with the `-c` option.
