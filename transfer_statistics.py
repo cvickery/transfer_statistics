@@ -261,17 +261,18 @@ if __name__ == '__main__':
       inst_dicts[key[2]][key] = num_transfers[key]
 
     # Write the institution dicts to txt and csv, sorted by decreasing frequency
-    with open(report_name.replace('txt', 'csv'), 'w', newline='') as csv_file:
-      writer = csv.writer(csv_file)
-      writer.writerow(['Receiving College', 'Sending College', 'Course', 'Count',
-                       'Receiving Courses'])
       for key, value in inst_dicts.items():
-        for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
-          print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: '
-                f"{', '.join([f'{c} [{v.count:,}]{v.flags}' for c, v in dst_courses[k].items()])}",
-                file=report)
-          receivers = '\n'.join([f'{c} [{v.count:,}] {v.flags}'for c, v in dst_courses[k].items()])
-          writer.writerow([key[0:3], k[0][0:3], k[1], v, receivers])
+        with open(f'./reports/{key[0:3]}_Transfers.csv', 'w', newline='') as csv_file:
+          writer = csv.writer(csv_file)
+          writer.writerow(['Sending College', 'Course', 'Count', 'Receiving Courses'])
+          for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+            receivers = ', '.join([f'{c} [{v.count:,}] {v.flags}'
+                                   for c, v in dst_courses[k].items()])
+            print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
+            # receivers = '\n'.join([f'{c} [{v.count:,}] {v.flags}'
+            #                        for c, v in dst_courses[k].items()])
+            receivers = receivers.replace(', ', '\n')
+            writer.writerow([k[0][0:3], k[1], v, receivers])
     print(report_name)
     subprocess.run("pbcopy", universal_newlines=True, input=f'm {report_name}')
     exit()
