@@ -18,7 +18,7 @@ import time
 
 from collections import defaultdict, namedtuple
 from datetime import datetime
-from openpyxl import Workbook
+from openpyxl import Workbook, worksheet
 from openpyxl.styles import Alignment, Font
 from pathlib import Path
 from psycopg.rows import namedtuple_row
@@ -65,6 +65,7 @@ def elapsed(since: float):
 
 if __name__ == '__main__':
 
+  session_start = time.time()
   parser = argparse.ArgumentParser('Transfer Statistics App')
   parser.add_argument('-b', '--build_bkcr_only', action='store_true')
   parser.add_argument('-c', '--count_transfers', action='store_true')
@@ -72,7 +73,6 @@ if __name__ == '__main__':
   args = parser.parse_args()
   if args.build_bkcr_only:
     print('Building bkcr-only Dict')
-    session_start = time.time()
 
     # Create list of (course_id, offer_nbr, dst) tuples where the course appears as part of a rule
     # that transfers only as BKCR.
@@ -257,8 +257,10 @@ if __name__ == '__main__':
                          row.dst_institution)][dst_course].rules = bkcr_rules[key].rules
           except KeyError as ke:
             pass
-    print(f'  Lookup complete', elapsed(lookup_start))
+    print(f'  Lookup took', elapsed(lookup_start))
 
+    print('Generate Report')
+    report_start = time.time()
     # Create separate dict for each college
     inst_dicts = defaultdict(dd_factory)
     for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
@@ -266,10 +268,21 @@ if __name__ == '__main__':
       inst_dicts[key[2]][key] = num_transfers[key]
 
     # Write the institution dicts to txt and csv, sorted by decreasing frequency
+    centered = Alignment('center')
+    bold = Font(bold=True)
+    wb = Workbook()
+
     for key, value in inst_dicts.items():
+      ws = wb.create_sheet(key)
       with open(f'./reports/{key[0:3]}_Transfers.csv', 'w', newline='') as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(['Sending College', 'Course', 'Count', 'Receiving Courses', 'Rules'])
+        headings = ['Sending College', 'Course', 'Count', 'Receiving Courses', 'Rules']
+        writer.writerow(headings)
+        row = 1
+        for col in range(len(headings)):
+          ws.cell(row, col + 1, headings[col]).font = bold
+          ws.cell(row, col + 1, headings[col]).alignment = centered
+
         for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
           receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
                                  for c, v in dst_courses[k].items()])
@@ -281,36 +294,26 @@ if __name__ == '__main__':
           for sublist in all_rules:
             for rule_str in sublist:
               rules_set.add(rule_str)
-          writer.writerow([k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))])
-    print(report_name)
+          row_values = [k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))]
+          writer.writerow(row_values)
+          row += 1
+          for col in range(len(row_values)):
+            ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
+                                           else row_values[col].strip())
+            ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
+                                                        vertical='top',
+                                                        wrapText=True)
+            if col == 2:
+              ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
+      # Set column widths (ad hoc values)
+      column_widths = {'A': 12.0, 'B': 10.0, 'C': 8.0, 'D': 16.0, 'E': 18.0}
+      for col, width in column_widths.items():
+        worksheet.dimensions.ColumnDimension(ws, index=col, width=width)
+
+    del wb['Sheet']
+    wb.save('./reports/transfer_statistics.xlsx')
+    print('Report generation took', elapsed(report_start))
     subprocess.run("pbcopy", universal_newlines=True, input=f'm {report_name}')
-    exit()
 
-
-centered = Alignment('center')
-bold = Font(bold=True)
-wb = Workbook()
-for event_pair in event_pairs:
-  earlier, later = event_pair
-  ws = wb.create_sheet(f'{event_names[earlier][0:14]} to {event_names[later][0:14]}')
-
-  headings = [''] + institutions
-  row = 1
-  for col in range(len(headings)):
-    ws.cell(row, col + 1, headings[col]).font = bold
-    ws.cell(row, col + 1, headings[col]).alignment = centered
-
-  for admit_term in admit_terms:
-    row += 1
-    ws.cell(row, 2, str(admit_term))
-    ws.merge_cells(start_row=row, end_row=row, start_column=2, end_column=len(headings))
-    ws.cell(row, 2).font = bold
-    ws.cell(row, 2).alignment = centered
-
-    # Everbody should have an N value
-    row += 1
-    ws.cell(row, 1, 'N').font = bold
-    values = [stat_values[institution][admit_term.term][event_pair].n
-              for institution in institutions]
-    for col in range(2, 2 + len(headings) - 1):
-      ws.cell(row, col).value = values[col - 2]
+  print('Total time was', elapsed(session_start))
+  exit()
