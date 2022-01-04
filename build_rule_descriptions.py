@@ -345,11 +345,13 @@ def format_rule(rule, rule_key):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser('Test build rule descriptions transfer rules')
   parser.add_argument('-b', '--build', action='store_true')
+  parser.add_argument('-l', '--lookup')
   parser.add_argument('-r', '--rule')
   args = parser.parse_args()
 
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
+      conn.autocommit = True
 
       # Cache college names
       cursor.execute("select code, prompt from cuny_institutions order by lower(name)")
@@ -362,7 +364,7 @@ if __name__ == '__main__':
         rule_key text primary key,
         description text)
         """)
-        conn.commit()
+
         cursor.execute('select rule_key from transfer_rules')
         print(f'{cursor.rowcount:,}')
         with conn.cursor(row_factory=namedtuple_row) as insert_cursor:
@@ -371,6 +373,15 @@ if __name__ == '__main__':
             insert_cursor.execute("""
             insert into rule_descriptions values (%s, %s)
             """, (row.rule_key, format_rule_by_key(row.rule_key)))
+
+      if args.lookup:
+        cursor.execute('select * from rule_descriptions where rule_key = %s',
+                       (args.lookup, ))
+        if cursor.rowcount > 0:
+          for row in cursor:
+            print(f'{row.rule_key}: {row.description}')
+        else:
+          print(f'Rule Key {args.lookup} not found')
 
   if args.rule:
     description = format_rule_by_key(args.rule)
