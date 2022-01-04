@@ -10,7 +10,6 @@
 
 import argparse
 import csv
-# import format_rules
 import os
 import psycopg
 import subprocess
@@ -43,6 +42,12 @@ def dst_course_factory():
 
 def course_set_factory():
   return DstCourse._make(('', 0, ''))
+
+
+def rule_descriptions_factory():
+  """ Provide default value for rule_descriptions table rows not yet populated.
+  """
+  return 'Description not available'
 
 
 def dd_factory():
@@ -183,7 +188,7 @@ if __name__ == '__main__':
     # transferred as (a) bkcr and (b) with other destination course ids. Count, also, the distinct
     # set of students affected for each transferred course.
     print('Count BKCR transfers')
-    print('  Cache bkcr_course_rules table')
+    print('  Cache bkcr_course_rules and rule descriptions')
     count_start = time.time()
 
     # Cache the bkcr_only_rules table
@@ -193,9 +198,11 @@ if __name__ == '__main__':
       with conn.cursor(row_factory=namedtuple_row) as cursor:
         cursor.execute('select * from bkcr_course_rules')
         for row in cursor:
+          rules_list = row.rules.split()
           bkcr_rules[(row.course_id,
                       row.offer_nbr,
-                      row.destination)] = RuleInfo._make([row.source, row.rules])
+                      row.destination)] = RuleInfo._make([row.source, sorted(rules_list)])
+
         print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
 
         # Cache status of all bkcr_courses
@@ -212,6 +219,18 @@ if __name__ == '__main__':
         #   print(key, value, file=sys.stderr)
         print(f'  {len(bkcr_courses):,} courses took {elapsed(count_start)}')
 
+        # Cache the decriptions of the rules referenced in bkcr_rules
+        rule_descriptions = defaultdict(rule_descriptions_factory)
+        cursor.execute("""
+        select rule_key, description
+        from rule_descriptions
+        where rule_key in (select unnest(string_to_array(rules, E' '))
+        from bkcr_course_rules)
+        """)
+        for row in cursor:
+          rule_descriptions[row.rule_key] = row.description
+
+    # Process the latest transfer evaluations query file.
     latest_query = None
     query_files = Path('./downloads/').glob('*csv')
     for query_file in query_files:
@@ -255,11 +274,11 @@ if __name__ == '__main__':
 
             num_transfers[(src_institution, src_course, row.dst_institution)] += 1
             student_sets[src_institution, src_course, row.dst_institution].add(row.student_id)
+
             # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
             # dst_course recordclass separately from updating it. (REPL works without it.)
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course]
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course].count += 1
-
             dst_courses[(src_institution, src_course,
                          row.dst_institution)][dst_course].flags = course_flags
             dst_courses[(src_institution, src_course,
@@ -274,7 +293,7 @@ if __name__ == '__main__':
     inst_dicts = defaultdict(dd_factory)
     for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
       # dst_institution is key[2]
-      inst_dicts[key[2]][key] = num_transfers[key]
+      inst_dicts[key[2]][key] = (num_transfers[key], len(student_sets[key]))
 
     # Write the institution dicts to txt and xlsx
     centered = Alignment('center')
@@ -293,15 +312,24 @@ if __name__ == '__main__':
       for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
         receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
                                for c, v in dst_courses[k].items()])
-        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
+        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v[0]:6,}/{v[1]:6,}: {receivers}', file=report)
         receivers = receivers.replace(', ', '\n')
         # Create list of all rules that _might_ have been involved in transferring this course
-        all_rules = [v.rules.split() for v in dst_courses[k].values()]
+        all_rules = [v.rules for v in dst_courses[k].values()]
         rules_set = set()
         for sublist in all_rules:
           for rule_str in sublist:
             rules_set.add(rule_str)
-        row_values = [k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))]
+        # k[0]          Sending College
+        # k[1]          Sending Course
+        # v[0]          Number of evaluations
+        # v[1]          Number of students
+        # receivers     Receiving courses
+        # rules_set     Rule Keys
+        # descriptions  Rule descriptions
+        descriptions = [rule_descriptions[rule] for rule in rules_set]
+        row_values = [k[0][0:3], k[1], v[0], v[1], receivers, '\n'.join(rules_set),
+                      '\n'.join(descriptions)]
 
         row += 1
         for col in range(len(row_values)):
@@ -310,7 +338,7 @@ if __name__ == '__main__':
           ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
                                                       vertical='top',
                                                       wrapText=True)
-          if col == 2:
+          if col == 2 or col == 3:
             ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
 
     del wb['Sheet']
