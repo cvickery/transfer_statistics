@@ -10,9 +10,10 @@
 
 import argparse
 import csv
-import subprocess
+# import format_rules
 import os
 import psycopg
+import subprocess
 import sys
 import time
 
@@ -45,6 +46,8 @@ def course_set_factory():
 
 
 def dd_factory():
+  """ For dict of dicts
+  """
   return defaultdict(int)
 
 
@@ -52,12 +55,15 @@ def chunks(lst, n):
     """Yield successive n-sized chunks from lst.
        Stack Overflow https://stackoverflow.com/questions/312443/
                               how-do-you-split-a-list-into-evenly-sized-chunks
+       This method is used to prevent the psycopg-3 driver from failing on large queries.
     """
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
 
 def elapsed(since: float):
+  """ Show the hours, minutes, and seconds that have elapsed since since seconds ago.
+  """
   h, ms = divmod(int(time.time() - since), 3600)
   m, s = divmod(ms, 60)
   return f'{h:02}:{m:02}:{s:02}'
@@ -174,7 +180,8 @@ if __name__ == '__main__':
 
   if args.count_transfers:
     # Go through the transfer evaluations and count how often the courses with a bkcr-only rule
-    # transferred as (a) bkcr and (b) with other destination course ids.
+    # transferred as (a) bkcr and (b) with other destination course ids. Count, also, the distinct
+    # set of students affected for each transferred course.
     print('Count BKCR transfers')
     print('  Cache bkcr_course_rules table')
     count_start = time.time()
@@ -222,6 +229,7 @@ if __name__ == '__main__':
     report_name = f"./reports/{datetime.now().isoformat()[0:10]}.txt"
     report = open(report_name, 'w')
     num_transfers = defaultdict(int)
+    student_sets = defaultdict(set)
     dst_courses = defaultdict(dst_course_factory)
     with open(latest_query, newline='', errors='replace') as query_file:
       reader = csv.reader(query_file)
@@ -246,8 +254,9 @@ if __name__ == '__main__':
               course_flags = ''
 
             num_transfers[(src_institution, src_course, row.dst_institution)] += 1
+            student_sets[src_institution, src_course, row.dst_institution].add(row.student_id)
             # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
-            # dst_course recordclass separately from updating it.
+            # dst_course recordclass separately from updating it. (REPL works without it.)
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course]
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course].count += 1
 
@@ -267,48 +276,42 @@ if __name__ == '__main__':
       # dst_institution is key[2]
       inst_dicts[key[2]][key] = num_transfers[key]
 
-    # Write the institution dicts to txt and csv, sorted by decreasing frequency
+    # Write the institution dicts to txt and xlsx
     centered = Alignment('center')
     bold = Font(bold=True)
     wb = Workbook()
 
     for key, value in inst_dicts.items():
       ws = wb.create_sheet(key)
-      with open(f'./reports/{key[0:3]}_Transfers.csv', 'w', newline='') as csv_file:
-        writer = csv.writer(csv_file)
-        headings = ['Sending College', 'Course', 'Count', 'Receiving Courses', 'Rules']
-        writer.writerow(headings)
-        row = 1
-        for col in range(len(headings)):
-          ws.cell(row, col + 1, headings[col]).font = bold
-          ws.cell(row, col + 1, headings[col]).alignment = centered
+      headings = ['Sending College', 'Course', 'Num Evaluations', 'Num Students',
+                  'Receiving Courses', 'Rule Keys', 'Rule Descriptions']
+      row = 1
+      for col in range(len(headings)):
+        ws.cell(row, col + 1, headings[col]).font = bold
+        ws.cell(row, col + 1, headings[col]).alignment = centered
 
-        for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
-          receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
-                                 for c, v in dst_courses[k].items()])
-          print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
-          receivers = receivers.replace(', ', '\n')
-          # Create list of all rules that _might_ have been involved in transferring this course
-          all_rules = [v.rules.split() for v in dst_courses[k].values()]
-          rules_set = set()
-          for sublist in all_rules:
-            for rule_str in sublist:
-              rules_set.add(rule_str)
-          row_values = [k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))]
-          writer.writerow(row_values)
-          row += 1
-          for col in range(len(row_values)):
-            ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
-                                           else row_values[col].strip())
-            ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
-                                                        vertical='top',
-                                                        wrapText=True)
-            if col == 2:
-              ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
-      # Set column widths (ad hoc values)
-      column_widths = {'A': 12.0, 'B': 10.0, 'C': 8.0, 'D': 16.0, 'E': 18.0}
-      for col, width in column_widths.items():
-        worksheet.dimensions.ColumnDimension(ws, index=col, width=width)
+      for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+        receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
+                               for c, v in dst_courses[k].items()])
+        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v:6,}: {receivers}', file=report)
+        receivers = receivers.replace(', ', '\n')
+        # Create list of all rules that _might_ have been involved in transferring this course
+        all_rules = [v.rules.split() for v in dst_courses[k].values()]
+        rules_set = set()
+        for sublist in all_rules:
+          for rule_str in sublist:
+            rules_set.add(rule_str)
+        row_values = [k[0][0:3], k[1], v, receivers, '\n'.join(sorted(rules_set))]
+
+        row += 1
+        for col in range(len(row_values)):
+          ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
+                                         else row_values[col].strip())
+          ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
+                                                      vertical='top',
+                                                      wrapText=True)
+          if col == 2:
+            ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
 
     del wb['Sheet']
     wb.save('./reports/transfer_statistics.xlsx')
