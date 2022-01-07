@@ -26,7 +26,7 @@ from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
-DstCourse = recordclass('DstCourse', 'flags count rules')
+DstCourse = recordclass('DstCourse', 'flags count num_rules rules')
 
 
 def stats_factory():
@@ -41,7 +41,7 @@ def dst_course_factory():
 
 
 def course_set_factory():
-  return DstCourse._make(('', 0, ''))
+  return DstCourse._make(('', 0, 0, ''))
 
 
 def rule_descriptions_factory():
@@ -192,7 +192,7 @@ if __name__ == '__main__':
     count_start = time.time()
 
     # Cache the bkcr_only_rules table
-    RuleInfo = namedtuple('RuleInfo', 'source rules')
+    RuleInfo = namedtuple('RuleInfo', 'source num_rules rules')
     bkcr_rules = dict()
     with psycopg.connect('dbname=cuny_curriculum') as conn:
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -201,7 +201,9 @@ if __name__ == '__main__':
           rules_list = row.rules.split()
           bkcr_rules[(row.course_id,
                       row.offer_nbr,
-                      row.destination)] = RuleInfo._make([row.source, sorted(rules_list)])
+                      row.destination)] = RuleInfo._make([row.source,
+                                                          row.num_rules,
+                                                          sorted(rules_list)])
 
         print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
 
@@ -260,8 +262,10 @@ if __name__ == '__main__':
           key = (int(row.src_course_id), int(row.src_offer_nbr), row.dst_institution)
           try:
             src_institution = bkcr_rules[key].source
+            num_rules = bkcr_rules[key].num_rules
             src_course = f'{row.src_subject:>6} {row.src_catalog_nbr.strip():<5}'
             dst_course = f'{row.dst_subject:>6} {row.dst_catalog_nbr.strip():<5}'.strip()
+
             dst_course_id = int(row.dst_course_id)
             dst_offer_nbr = int(row.dst_offer_nbr)
             try:
@@ -281,6 +285,9 @@ if __name__ == '__main__':
             dst_courses[(src_institution, src_course, row.dst_institution)][dst_course].count += 1
             dst_courses[(src_institution, src_course,
                          row.dst_institution)][dst_course].flags = course_flags
+            # Looking for cases where there is only one rule, which will be bkcr by definition
+            dst_courses[(src_institution, src_course,
+                         row.dst_institution)][dst_course].num_rules = num_rules
             dst_courses[(src_institution, src_course,
                          row.dst_institution)][dst_course].rules = bkcr_rules[key].rules
           except KeyError as ke:
@@ -303,11 +310,13 @@ if __name__ == '__main__':
     for key, value in inst_dicts.items():
       ws = wb.create_sheet(key)
       headings = ['Sending College', 'Course', 'Num Evaluations', 'Num Students',
-                  'Receiving Courses', 'Rule Keys', 'Rule Descriptions']
+                  'Receiving Courses', 'Rules']
       row = 1
       for col in range(len(headings)):
         ws.cell(row, col + 1, headings[col]).font = bold
-        ws.cell(row, col + 1, headings[col]).alignment = centered
+        ws.cell(row, col + 1, headings[col]).alignment = Alignment(horizontal='center',
+                                                                   vertical='top',
+                                                                   wrapText=True)
 
       for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
         receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
@@ -327,9 +336,23 @@ if __name__ == '__main__':
         # receivers     Receiving courses
         # rules_set     Rule Keys
         # descriptions  Rule descriptions
-        descriptions = [rule_descriptions[rule] for rule in rules_set]
-        row_values = [k[0][0:3], k[1], v[0], v[1], receivers, '\n'.join(rules_set),
-                      '\n'.join(descriptions)]
+        descriptions = [f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}'
+                        for rule in rules_set]
+        print(descriptions, file=sys.stderr)
+
+        # highlight rows based on how problematic the situation is.
+        problematic_level = 0
+        # A row with a single rule, even if there were multiple receivers (re-evaluations,
+        # presumably) is a case where the course gets only bkcr: an "item of interest"
+        if len(rules_set) == 1:
+          problematic_level = 1
+        # A row with only one possible rule, even if there were multiple receivers is a case
+        # where there is no way (by completing other courses in combination with this one) to avoid
+        # bkcr: an "item of concern"
+        if num_rules == 1:
+          problematic_level = 2
+
+        row_values = [k[0][0:3], k[1], v[0], v[1], receivers, '\n'.join(descriptions)]
 
         row += 1
         for col in range(len(row_values)):
@@ -340,6 +363,11 @@ if __name__ == '__main__':
                                                       wrapText=True)
           if col == 2 or col == 3:
             ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
+            ws.cell(row, col + 1).number_format = '#,##0'
+          if problematic_level == 1:
+            ws.cell(row, col + 1).font = Font(bold=True, color='800080')
+          if problematic_level == 2:
+            ws.cell(row, col + 1).font = Font(bold=True, color='ff0000')
 
     del wb['Sheet']
     wb.save('./reports/transfer_statistics.xlsx')
