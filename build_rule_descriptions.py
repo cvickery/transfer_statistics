@@ -7,7 +7,6 @@ import re
 import sys
 
 from collections import namedtuple
-from format_rules import format_rule_by_key
 from psycopg.rows import namedtuple_row
 
 # Named tuples for a transfer rule and its source and destination course lists.
@@ -345,6 +344,7 @@ def format_rule(rule, rule_key):
 if __name__ == '__main__':
   parser = argparse.ArgumentParser('Test build rule descriptions transfer rules')
   parser.add_argument('-b', '--build', action='store_true')
+  parser.add_argument('-i', '--init', action='store_true')
   parser.add_argument('-l', '--lookup')
   parser.add_argument('-r', '--rule')
   args = parser.parse_args()
@@ -357,7 +357,8 @@ if __name__ == '__main__':
       cursor.execute("select code, prompt from cuny_institutions order by lower(name)")
       institution_names = {row.code: row.prompt for row in cursor}
 
-      if args.build:
+      # Initialize the rule_descriptions table?
+      if args.init:
         cursor.execute("""
         drop table if exists rule_descriptions;
         create table rule_descriptions (
@@ -365,14 +366,26 @@ if __name__ == '__main__':
         description text)
         """)
 
+      if args.build:
+        # Get dict of already-done rules
+        cursor.execute("""
+        select rule_key
+        from rule_descriptions""")
+        print(f'{cursor.rowcount:,} already done')
+
+        already_done = [row.rule_key for row in cursor]
         cursor.execute('select rule_key from transfer_rules')
         print(f'{cursor.rowcount:,}')
         with conn.cursor(row_factory=namedtuple_row) as insert_cursor:
           for row in cursor:
             print(f'\r{cursor.rownumber:,}', end='')
-            insert_cursor.execute("""
-            insert into rule_descriptions values (%s, %s)
-            """, (row.rule_key, format_rule_by_key(row.rule_key)))
+            if row.rule_key not in already_done:
+              print(' add ', end='')
+              insert_cursor.execute("""
+              insert into rule_descriptions values (%s, %s)
+              """, (row.rule_key, format_rule_by_key(row.rule_key)))
+            else:
+              print(' skip', end='')
 
       if args.lookup:
         cursor.execute('select * from rule_descriptions where rule_key = %s',
