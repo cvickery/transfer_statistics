@@ -22,10 +22,12 @@
       The B, I, and M flags are for blanket, inactive, and message course.
 """
 import os
+import json
 import psycopg
 import sys
 import time
 
+from collections import namedtuple
 from psycopg.rows import namedtuple_row
 
 
@@ -73,20 +75,20 @@ def _grade(min_gpa, max_gpa):
   # Generate the letter grade requirement string
 
   if min_gpa < 1.0 and max_gpa > 3.7:
-    return 'Passsing grade'
+    return 'any passsing grade'
 
   if min_gpa >= 0.7 and max_gpa >= 3.7:
     letter = letters[int(round(min_gpa * 3))]
     return f'{letter} or above'
 
   if min_gpa > 0.7 and max_gpa < 3.7:
-    return f'Between {letters[int(round(min_gpa * 3))]} and {letters[int(round(max_gpa * 3))]}'
+    return f'between {letters[int(round(min_gpa * 3))]} and {letters[int(round(max_gpa * 3))]}'
 
   if max_gpa < 3.7:
     letter = letters[int(round(max_gpa * 3))]
-    return 'Below ' + letter
+    return 'below ' + letter
 
-  return 'Passing grade'
+  return 'any passing grade'
 
 
 def elapsed(since: float):
@@ -97,29 +99,94 @@ def elapsed(since: float):
   return f'{h:02}:{m:02}:{s:02}'
 
 
+# and_list()
+# -------------------------------------------------------------------------------------------------
+def and_list(items):
+  """ Create a comma-separated list of strings.
+  """
+  assert isinstance(items, list)
+  match len(items):
+    case 0: return ''
+    case 1: return items[0]
+    case 2: return f'{items[0]} and {items[1]}'
+    case _: return ', '.join(items[0:-1]) + f', and {items[-1]}'
+
+
 # main()
-# ------------------------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
+  Alias = namedtuple('Alias', """ course_id
+                                  offer_nbr
+                                  institution
+                                  discipline
+                                  catalog_number
+                                  cat_num cuny_subject
+                                  min_credits
+                                  max_credits
+                                  course_status
+                                  is_mesg
+                                  is_bkcr
+                              """)
   session_start = time.time()
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
+
+      # Create namedtuples for the columns in the source and destination course lists
+      cursor.execute("""
+      select column_name
+      from information_schema.columns
+      where table_name = 'source_courses'
+      """)
+
+      cursor.execute("""
+      select column_name
+      from information_schema.columns
+      where table_name = 'destination_courses'
+      """)
+
       print('Lookup Rules')
       cursor.execute("""
-      select r.*, array_agg(s.*) as src, array_agg(r.*) as dst
+      select r.rule_key, json_agg(s.*) as src, json_agg(d.*) as dst
       from transfer_rules r, source_courses s, destination_courses d
       where s.rule_id = r.id
       and d.rule_id = r.id
-      group by r.id
+      group by r.id, s.id, d.id
       """)
 
       print(f'{cursor.rowcount:,} Rules {elapsed(session_start)}')
       print('Format Rules')
       format_start = time.time()
       for rule in cursor:
-        print(f'\r {cursor.rownumber:,}', end='')
-        # Gather sending side
 
+        print(f'\r {cursor.rownumber:,}', end='')
+
+        # Sending side
+        sources = rule.src
+        source_list = []
+        sending_credits = 0.0
+        for source in sorted(sources, key=lambda val: val['cat_num']):
+          sending_credits += source['max_credits']
+          alias_list = []
+          for alias in source['aliases']:
+            # Create namedtuple so we can access the needed fields by name
+            alias_values = Alias._make(alias)
+            alias_list.append(f'{alias_values.discipline} {alias_values.catalog_number}')
+          source['aliases'] = alias_list
+          grade_str = _grade(source['min_gpa'], source['max_gpa'])
+          course_str = f'{source["discipline"]} {source["catalog_number"]}'
+          if len(alias_list) > 0:
+            alias_str = and_list(alias_list)
+            suffix = '' if len(alias_list) == 1 else 'es'
+            alias_clause = f' (alias{suffix}: {alias_str})'
+          else:
+            alias_clause = ''
+
+          source_list.append(f'{grade_str} in {course_str}{alias_clause}')
+
+        sending_side = f'{and_list(source_list)} ({sending_credits:0.1f}cr)'
         # Gather receiving side
+        dests = rule.dst
+        print(f'\n{sources}\n{sending_side} transfers to {rule.rule_key[6:9]} as ...')
 
         # Put 'em together
 
