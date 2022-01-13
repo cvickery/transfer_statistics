@@ -27,7 +27,7 @@ import psycopg
 import sys
 import time
 
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from psycopg.rows import namedtuple_row
 
 
@@ -75,7 +75,7 @@ def _grade(min_gpa, max_gpa):
   # Generate the letter grade requirement string
 
   if min_gpa < 1.0 and max_gpa > 3.7:
-    return 'any passsing grade'
+    return 'a passsing grade'
 
   if min_gpa >= 0.7 and max_gpa >= 3.7:
     letter = letters[int(round(min_gpa * 3))]
@@ -88,7 +88,7 @@ def _grade(min_gpa, max_gpa):
     letter = letters[int(round(max_gpa * 3))]
     return 'below ' + letter
 
-  return 'any passing grade'
+  return 'a passing grade'
 
 
 def elapsed(since: float):
@@ -144,17 +144,18 @@ if __name__ == "__main__":
       where table_name = 'destination_courses'
       """)
 
-      print('Lookup Rules')
+      print('Lookup Sending Side')
+      lookup_start = time.time()
+      rules = defaultdict(str)
       cursor.execute("""
-      select r.rule_key, json_agg(s.*) as src, json_agg(d.*) as dst
-      from transfer_rules r, source_courses s, destination_courses d
+      select r.rule_key, json_agg(s.*) as src
+      from transfer_rules r, source_courses s
       where s.rule_id = r.id
-      and d.rule_id = r.id
-      group by r.id, s.id, d.id
+      group by rule_key
       """)
 
-      print(f'{cursor.rowcount:,} Rules {elapsed(session_start)}')
-      print('Format Rules')
+      print(f'{cursor.rowcount:,} Rules {elapsed(lookup_start)}')
+      print('Format Sending Side')
       format_start = time.time()
       for rule in cursor:
 
@@ -183,11 +184,40 @@ if __name__ == "__main__":
 
           source_list.append(f'{grade_str} in {course_str}{alias_clause}')
 
-        sending_side = f'{and_list(source_list)} ({sending_credits:0.1f}cr)'
-        # Gather receiving side
-        dests = rule.dst
-        print(f'\n{sources}\n{sending_side} transfers to {rule.rule_key[6:9]} as ...')
+        rules[rule.rule_key] = f'{" and ".join(source_list)} ({sending_credits:0.1f} cr)'
+        suffix = 's'  # if len(source_list) == 1 else ''
+      print(f'{len(rules):,} Rules {elapsed(format_start)}')
 
-        # Put 'em together
+      # Gather receiving side
+      print('Lookup Receiving Side')
+      lookup_start = time.time()
+      cursor.execute("""
+      select r.rule_key, json_agg(d.*) as dst
+      from transfer_rules r, destination_courses d
+      where d.rule_id = r.id
+      group by rule_key
+      """)
+      print(f'{cursor.rowcount:,} Rules {elapsed(lookup_start)}')
+      print('Format Receiving Side')
+      format_start = time.time()
+      for rule in cursor:
+        print(f'\r {cursor.rownumber:,}', end='')
+        dests = rule.dst
+        dest_list = []
+        dest_credits = 0.0
+        for dest in sorted(dests, key=lambda val: val['cat_num']):
+          # To avoid course lookups here, have to do it in populate_transfer_rules.py
+          assert dest['credit_source'] in 'CER'
+          match dest['credit_source']:
+            case 'C':
+              pass
+            case 'E':
+              pass
+            case 'R':
+              pass
 
       print(f'Formating Complete {elapsed(format_start)}')
+
+      # Put 'em together
+
+  exit(elapsed(session_start))

@@ -27,6 +27,7 @@ Transfer_Rule = namedtuple('Transfer_Rule', """
 # many offer_nbr values there are for the course_id.
 Source_Course = namedtuple('Source_Course', """
                            course_id
+                           offer_nbr
                            offer_count
                            discipline
                            catalog_number
@@ -37,10 +38,12 @@ Source_Course = namedtuple('Source_Course', """
                            max_credits
                            min_gpa
                            max_gpa
+                           aliases
                            """)
 
 Destination_Course = namedtuple('Destination_Course', """
                                 course_id
+                                offer_nbr
                                 offer_count
                                 discipline
                                 catalog_number
@@ -150,33 +153,7 @@ def format_rule_by_key(rule_key):
       """, rule_key.split(':'))
 
       rule = cursor.fetchone()
-      """
-          Source_Course
-            course_id
-            offer_count
-            discipline
-            catalog_number
-            discipline_name
-            cuny_subject
-            cat_num
-            min_credits
-            max_credits
-            min_gpa
-            max_gpa
 
-          Destination_Course
-            course_id
-            offer_count
-            discipline
-            catalog_number
-            discipline_name
-            cuny_subject
-            cat_num
-            transfer_credits
-            credit_source
-            is_mesg
-            is_bkcr
-      """
       cursor.execute("""
         select  sc.course_id,
                 sc.offer_count,
