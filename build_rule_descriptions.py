@@ -1,79 +1,34 @@
 #! /usr/local/bin/python3
+""" Format a transfer rule into a text string. Along the way, build a dict of the parts for possible
+    use in building a table row with the same info:
 
-import argparse
+      description         := sending_side 'at {college} transfers to {college} as' receiving_side
+      sending_side        := requirement ['and {requirement}']*
+      requirement         := grade course
+      grade               := 'Passing grade'
+                          | '{letter} or better'
+                          | 'Less than {letter}'
+                          | 'Between {letter} and {letter}'
+      course              := discipline catalog_number (credits | flag*) alias_string
+      credits             := '({float} cr)'
+      alias_string        := '[Alias(es): ' alias_list
+      alias_list          := alias_course [', and' alias_course]*
+      alias_course        := '{discipline} {catalog_number}'
+      receiving_side      := course+
+      flag                := 'B' | 'I' | 'M'
+
+      Within strings, {college} is the name of a college {letter} is a letter grade and {float} is a
+      floating point number with 1 decimal place, the sum of credits for the sending courses.
+      The B, I, and M flags are for blanket, inactive, and message course.
+"""
 import os
+import json
 import psycopg
-import re
 import sys
+import time
 
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 from psycopg.rows import namedtuple_row
-
-# Named tuples for a transfer rule and its source and destination course lists.
-Transfer_Rule = namedtuple('Transfer_Rule', """
-                           rule_id
-                           source_institution
-                           destination_institution
-                           subject_area
-                           group_number
-                           source_disciplines
-                           source_subjects
-                           review_status
-                           source_courses
-                           destination_courses
-                           """)
-
-# The information from the source and destination courses tables is augmented with a count of how
-# many offer_nbr values there are for the course_id.
-Source_Course = namedtuple('Source_Course', """
-                           course_id
-                           offer_nbr
-                           offer_count
-                           discipline
-                           catalog_number
-                           discipline_name
-                           cuny_subject
-                           cat_num
-                           min_credits
-                           max_credits
-                           min_gpa
-                           max_gpa
-                           aliases
-                           """)
-
-Destination_Course = namedtuple('Destination_Course', """
-                                course_id
-                                offer_nbr
-                                offer_count
-                                discipline
-                                catalog_number
-                                discipline_name
-                                cuny_subject
-                                cat_num
-                                transfer_credits
-                                credit_source
-                                is_mesg
-                                is_bkcr
-                                """)
-
-
-# andor_list()
-# -------------------------------------------------------------------------------------------------
-def andor_list(items, andor='and'):
-  """ Join a list of stings into a comma-separated con/disjunction.
-      Forms:
-        a             a
-        a and b       a or b
-        a, b, and c   a, b, or c
-  """
-  return_str = ', '.join(items)
-  k = return_str.rfind(',')
-  if k > 0:
-    k += 1
-    return_str = return_str[:k] + f' {andor}' + return_str[k:]
-  if return_str.count(',') == 1:
-    return_str = return_str.replace(',', '')
-  return return_str
 
 
 # _grade()
@@ -120,259 +75,165 @@ def _grade(min_gpa, max_gpa):
   # Generate the letter grade requirement string
 
   if min_gpa < 1.0 and max_gpa > 3.7:
-    return 'Pass'
+    return 'any passing grade'
 
   if min_gpa >= 0.7 and max_gpa >= 3.7:
     letter = letters[int(round(min_gpa * 3))]
     return f'{letter} or above'
 
   if min_gpa > 0.7 and max_gpa < 3.7:
-    return f'Between {letters[int(round(min_gpa * 3))]} and {letters[int(round(max_gpa * 3))]}'
+    return f'between {letters[int(round(min_gpa * 3))]} and {letters[int(round(max_gpa * 3))]}'
 
   if max_gpa < 3.7:
     letter = letters[int(round(max_gpa * 3))]
-    return 'Below ' + letter
+    return 'below ' + letter
 
-  return 'Pass'
+  return 'any passing grade'
 
 
-# format_rule_by_key()
-# -------------------------------------------------------------------------------------------------
-def format_rule_by_key(rule_key):
-  """ Generate a Transfer_Rule tuple given the key.
+def elapsed(since: float):
+  """ Show the hours, minutes, and seconds that have elapsed since since seconds ago.
   """
+  h, ms = divmod(int(time.time() - since), 3600)
+  m, s = divmod(ms, 60)
+  return f'{h:02}:{m:02}:{s:02}'
+
+
+# and_list()
+# -------------------------------------------------------------------------------------------------
+def and_list(items):
+  """ Create a comma-separated list of strings.
+  """
+  assert isinstance(items, list)
+  match len(items):
+    case 0: return ''
+    case 1: return items[0]
+    case 2: return f'{items[0]} and {items[1]}'
+    case _: return ', '.join(items[0:-1]) + f', and {items[-1]}'
+
+
+# main()
+# -------------------------------------------------------------------------------------------------
+if __name__ == "__main__":
+  Alias = namedtuple('Alias', """ course_id
+                                  offer_nbr
+                                  institution
+                                  discipline
+                                  catalog_number
+                                  cat_num cuny_subject
+                                  min_credits
+                                  max_credits
+                                  course_status
+                                  is_mesg
+                                  is_bkcr
+                              """)
+  session_start = time.time()
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
 
+      # Create namedtuples for the columns in the source and destination course lists
       cursor.execute("""
-      select * from transfer_rules
-       where source_institution = %s
-         and destination_institution = %s
-         and subject_area = %s
-         and group_number = %s
-      """, rule_key.split(':'))
-
-      rule = cursor.fetchone()
+      select column_name
+      from information_schema.columns
+      where table_name = 'source_courses'
+      """)
 
       cursor.execute("""
-        select  sc.course_id,
-                sc.offer_count,
-                sc.discipline,
-                sc.catalog_number,
-                dn.discipline_name,
-                sc.cuny_subject,
-                sc.cat_num,
-                sc.min_credits,
-                sc.max_credits,
-                sc.min_gpa,
-                sc.max_gpa
-        from source_courses sc, cuny_disciplines dn
-        where sc.rule_id = %s
-          and dn.institution = %s
-          and dn.discipline = sc.discipline
-        order by discipline, cat_num
-        """, (rule.id, rule.source_institution))
-      source_courses = [Source_Course._make(c) for c in cursor.fetchall()]
+      select column_name
+      from information_schema.columns
+      where table_name = 'destination_courses'
+      """)
 
+      print('Lookup Sending Side')
+      lookup_start = time.time()
+      rules = defaultdict(str)
       cursor.execute("""
-        select  dc.course_id,
-                dc.offer_count,
-                dc.discipline,
-                dc.catalog_number,
-                dn.discipline_name,
-                dc.cuny_subject,
-                dc.cat_num,
-                dc.transfer_credits,
-                dc.credit_source,
-                dc.is_mesg,
-                dc.is_bkcr
-         from destination_courses dc, cuny_disciplines dn
-        where dc.rule_id = %s
-          and dn.institution = %s
-          and dn.discipline = dc.discipline
-        order by discipline, cat_num
-        """, (rule.id, rule.destination_institution))
-      # 'offer_count', 'discipline', 'catalog_number', 'discipline_name', 'cuny_subject', 'cat_num', 'transfer_credits', 'credit_source', 'is_mesg', and 'is_bkcr'
-      destination_courses = [Destination_Course._make(c) for c in cursor.fetchall()]
+      select r.rule_key, json_agg(s.*) as src
+      from transfer_rules r, source_courses s
+      where s.rule_id = r.id
+      group by rule_key
+      """)
 
-      the_rule = Transfer_Rule._make(
-          [rule.id,
-           rule.source_institution,
-           rule.destination_institution,
-           rule.subject_area,
-           rule.group_number,
-           rule.source_disciplines,
-           rule.source_subjects,
-           rule.review_status,
-           source_courses,
-           destination_courses])
+      print(f'{cursor.rowcount:,} Rules {elapsed(lookup_start)}')
+      print('Format Sending Side')
+      format_start = time.time()
+      for rule in cursor:
 
-      conn.close()
-      return format_rule(the_rule, rule_key)
+        print(f'\r {cursor.rownumber:,}', end='')
 
+        # Sending side
+        sources = rule.src
+        source_list = []
+        sending_credits = 0.0
+        for source in sorted(sources, key=lambda val: val['cat_num']):
+          sending_credits += source['max_credits']
+          alias_list = []
+          for alias in source['aliases']:
+            # Create namedtuple so we can access the needed fields by name
+            alias_values = Alias._make(alias)
+            alias_list.append(f'{alias_values.discipline} {alias_values.catalog_number}')
+          source['aliases'] = alias_list
+          grade_str = _grade(source['min_gpa'], source['max_gpa'])
+          course_str = (f'{source["discipline"]} {source["catalog_number"]} '
+                        f'({source["max_credits"]:0.1f} cr)')
+          if len(alias_list) > 0:
+            alias_str = and_list(alias_list)
+            suffix = '' if len(alias_list) == 1 else 'es'
+            alias_clause = f' (alias{suffix}: {alias_str})'
+          else:
+            alias_clause = ''
 
-# format_rule()
-# -------------------------------------------------------------------------------------------------
-def format_rule(rule, rule_key):
-  """ Return a plain-text description of a rule. Unlike transfer-app, ignores cross-listed courses.
-  """
+          source_list.append(f'{grade_str} in {course_str}{alias_clause}')
 
-  # Extract disciplines and courses from the rule
-  source_disciplines = rule.source_disciplines.strip(':').split(':')
-  source_courses = rule.source_courses
-  destination_courses = rule.destination_courses
+        total_credit_str = f' ({sending_credits:0.1f} cr)' if len(source_list) > 1 else ''
+        rule_str = f'{" and ".join(source_list)}{total_credit_str} transfers as '
+        rules[rule.rule_key] = rule_str
+      print(f'{len(rules):,} Rules {elapsed(format_start)}')
 
-  # Check validity of Source and Destination course_ids
-  source_course_ids = [course.course_id for course in rule.source_courses]
-  # There should be no duplicates in source_course_ids for the rule
-  assert len(set(source_course_ids)) == len(source_course_ids), \
-      f'Duplcated source course id(s) for rule {rule_key}'
-  source_course_id_str = ':'.join([f'{id}' for id in source_course_ids])
+      # Gather receiving side
+      print('Lookup Receiving Side')
+      lookup_start = time.time()
+      cursor.execute("""
+      select r.rule_key, json_agg(d.*) as dst
+      from transfer_rules r, destination_courses d
+      where d.rule_id = r.id
+      group by rule_key
+      """)
+      print(f'\n{cursor.rowcount:,} Rules {elapsed(lookup_start)}')
+      print('Format Receiving Side')
+      format_start = time.time()
+      for rule in cursor:
+        print(f'\r {cursor.rownumber:,}', end='')
+        dests = rule.dst
+        dest_list = []
+        dest_credits = 0.0
+        for dest in sorted(dests, key=lambda val: val['cat_num']):
+          if dest['is_mesg'] or dest['is_bkcr']:
+            admins = []
+            if dest['is_mesg']:
+              admins.append('M')
+            if dest['is_bkcr']:
+              admins.append('B')
+            credit_str = f' ({"+".join(admins)})'
+          elif dest['transfer_credits'] == 99:
+            credit_str = '(*)'
+          else:
+            credit_str = f' ({dest["transfer_credits"]:0.1f} cr)'
+          dest_list.append(f'{dest["discipline"]} {dest["catalog_number"]}{credit_str}')
+        rules[rule.rule_key] += ' and '.join(dest_list)
 
-  destination_course_ids = [course.course_id for course in rule.destination_courses]
-  # There should be no duplicates in destination_course_ids for the rule
-  assert len(set(destination_course_ids)) == len(destination_course_ids), \
-      f'Duplcated destination course id(s) for rule {rule_key}'
-  destination_course_id_str = ':'.join([f'{id}' for id in destination_course_ids])
-
-  source_class = ''  # for the HTML credit-mismatch indicator
-
-  min_source_credits = 0.0
-  max_source_credits = 0.0
-  source_course_list = ''
-
-  # Assumptions and Presumptions:
-  # - All source courses do not necessarily have the same discipline.
-  # - Grade requirement can chage as the list of courses is traversed.
-  # - If course has cross-listings, list cross-listed course(s) in parens following the
-  #   catalog number. AND-list within a list of courses having the same grade requirement. OR-list
-  #   for cross-listed courses.
-  # Examples:
-  #   Passing grades in LCD 101 (=ANTH 101 or CMLIT 207) and LCD 102.
-  #   Passing grades in LCD 101 (=ANTH 101) and LCD 102. C- or better in LCD 103.
-
-  # First, group courses by grade requirement. Not sure there will ever be a mix for one rule, but
-  # if it ever happens, we’ll be ready.
-  courses_by_grade = dict()
-  for course in source_courses:
-    # Accumulate min/max credits for checking against destination credits
-    min_source_credits += float(course.min_credits)
-    max_source_credits += float(course.max_credits)
-    if (course.min_gpa, course.max_gpa) not in courses_by_grade.keys():
-      courses_by_grade[(course.min_gpa, course.max_gpa)] = []
-    courses_by_grade[(course.min_gpa, course.max_gpa)].append(course)
-
-  # For each grade requirement, sort by cat_num, and generate array of strings to AND-list together
-  by_grade_keys = [key for key in courses_by_grade.keys()]
-  by_grade_keys.sort()
-
-  for key in by_grade_keys:
-    grade_str = _grade(key[0], key[1])
-    if grade_str != 'Pass':
-      grade_str += ' in '
-    courses = courses_by_grade[key]
-    courses.sort(key=lambda c: c.cat_num)
-    course_list = []
-    for course in courses:
-      course_list.append(f'{course.discipline} {course.catalog_number}')
-    source_course_list += f'{grade_str} {andor_list(course_list, "and")}'
-
-  # Build the destination part of the rule group
-  #   If any of the destination courses has the BKCR attribute, the credits for that course will be
-  #   whatever is needed to make the credits match the sum of the sending course credits.
-  destination_credits = 0.0
-  has_bkcr = False
-  discipline = ''
-  destination_course_list = ''
-  for course in destination_courses:
-    if course.is_bkcr:
-      has_bkcr = True   # Number of credits will be computed to match source credits
-    else:
-      destination_credits += float(course.transfer_credits)
-      cat_num_class = ''
-    course_catalog_number = course.catalog_number
-    if discipline != course.discipline:
-      if destination_course_list != '':
-        destination_course_list = destination_course_list.strip('/') + '; '
-      destination_course_list = destination_course_list.strip('/ ') + course.discipline + '-'
-
-    destination_course_list += course_catalog_number
-
-  destination_course_list = destination_course_list.strip('/').replace(';', ' and ')
-
-  # Credits match if there is BKCR, otherwise, check if in range.
-  if destination_credits < min_source_credits and has_bkcr:
-    destination_credits = min_source_credits
-
-  if min_source_credits != max_source_credits:
-    source_credits_str = f'{min_source_credits}-{max_source_credits}'
-  else:
-    source_credits_str = f'{min_source_credits}'
-
-  description = (f'{source_course_list} at {institution_names[rule.source_institution]} '
-                 f'({source_credits_str} cr) transfers to '
-                 f'{institution_names[rule.destination_institution]} as {destination_course_list} '
-                 f'({destination_credits} cr)')
-  description = description.replace('Pass', 'Passing grade in')
-
-  return description
-
-
-if __name__ == '__main__':
-  parser = argparse.ArgumentParser('Test build rule descriptions transfer rules')
-  parser.add_argument('-b', '--build', action='store_true')
-  parser.add_argument('-i', '--init', action='store_true')
-  parser.add_argument('-l', '--lookup')
-  parser.add_argument('-r', '--rule')
-  args = parser.parse_args()
-
-  with psycopg.connect('dbname=cuny_curriculum') as conn:
-    with conn.cursor(row_factory=namedtuple_row) as cursor:
-      conn.autocommit = True
-
-      # Cache college names
-      cursor.execute("select code, prompt from cuny_institutions order by lower(name)")
-      institution_names = {row.code: row.prompt for row in cursor}
-
-      # Initialize the rule_descriptions table?
-      if args.init:
-        cursor.execute("""
+      print(f'\nFormating Complete {elapsed(format_start)}')
+      print('Generate Report')
+      generate_start = time.time()
+      cursor.execute("""
         drop table if exists rule_descriptions;
         create table rule_descriptions (
         rule_key text primary key,
         description text)
         """)
 
-      if args.build:
-        # Get dict of already-done rules
-        cursor.execute("""
-        select rule_key
-        from rule_descriptions""")
-        print(f'{cursor.rowcount:,} already done')
-
-        already_done = [row.rule_key for row in cursor]
-        cursor.execute('select rule_key from transfer_rules')
-        print(f'{cursor.rowcount:,}')
-        with conn.cursor(row_factory=namedtuple_row) as insert_cursor:
-          for row in cursor:
-            print(f'\r{cursor.rownumber:,}', end='')
-            if row.rule_key not in already_done:
-              print(' add ', end='')
-              insert_cursor.execute("""
-              insert into rule_descriptions values (%s, %s)
-              """, (row.rule_key, format_rule_by_key(row.rule_key)))
-            else:
-              print(' skip', end='')
-
-      if args.lookup:
-        cursor.execute('select * from rule_descriptions where rule_key = %s',
-                       (args.lookup, ))
-        if cursor.rowcount > 0:
-          for row in cursor:
-            print(f'{row.rule_key}: {row.description}')
-        else:
-          print(f'Rule Key {args.lookup} not found')
-
-  if args.rule:
-    description = format_rule_by_key(args.rule)
-    print(f"{args.rule}: {description}")
+      with cursor.copy("copy rule_descriptions (rule_key, description) from stdin") as report:
+        for k, v in rules.items():
+          report.write_row((k, f'{v[0].upper()+v[1:]}'))
+      print('Generate Complete', elapsed(generate_start))
+  exit(elapsed(session_start))
