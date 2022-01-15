@@ -104,7 +104,7 @@ if __name__ == '__main__':
         for row in cursor:
           only_bkcr[row.dest].append((row.course_id, row.offer_nbr))
         total = sum([len(only_bkcr[institution]) for institution in only_bkcr.keys()])
-        print(f'{total:,} blcr-only rules\n{elapsed(session_start)}')
+        print(f'{total:,} bkcr-only rules\n{elapsed(session_start)}')
 
       # Find all rules for transferring each of the above courses to the destination institution.
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -205,7 +205,7 @@ if __name__ == '__main__':
                                                           row.num_rules,
                                                           sorted(rules_list)])
 
-        print(f'  {len(bkcr_rules):,} rules took {elapsed(count_start)}')
+        print(f'  {len(bkcr_rules):10,} bkcr rules. {elapsed(count_start)}')
 
         # Cache status of all bkcr_courses
         count_start = time.time()
@@ -217,9 +217,7 @@ if __name__ == '__main__':
         """)
         for row in cursor:
           bkcr_courses[(int(row.course_id), int(row.offer_nbr))] = row.status
-        # for key, value in bkcr_courses.items():
-        #   print(key, value, file=sys.stderr)
-        print(f'  {len(bkcr_courses):,} courses took {elapsed(count_start)}')
+        print(f'  {len(bkcr_courses):10,} bkcr course status lookups. {elapsed(count_start)}')
 
         # Cache the decriptions of the rules referenced in bkcr_rules
         rule_descriptions = defaultdict(rule_descriptions_factory)
@@ -231,6 +229,25 @@ if __name__ == '__main__':
         """)
         for row in cursor:
           rule_descriptions[row.rule_key] = row.description
+        print(f'  {len(rule_descriptions):10,} rule descriptions. {elapsed(count_start)}')
+
+        # Cache all inactive courses in the university (for reporting inactive destination courses)
+        cursor.execute("select course_id, offer_nbr from cuny_courses where course_status = 'I'")
+        inactive_courses = [(row.course_id, row.offer_nbr) for row in cursor]
+        print(f'  {len(inactive_courses):10,} inactive courses. {elapsed(count_start)}')
+
+        # List of rule_keys for bkcr-only rules
+        cursor.execute("""
+        select r.rule_key
+        from transfer_rules r, destination_courses d
+        where d.rule_id = r.id
+          and true = ALL(select c.attributes ~* 'bkcr'
+                           from cuny_courses c
+                          where c.course_id = d.course_id
+                            and c.offer_nbr = d.offer_nbr)
+        """)
+        bkcr_only_rule_keys = [row.rule_key for row in cursor]
+        print(f'  {len(bkcr_only_rule_keys):10,} BKCR-only rule_keys. {elapsed(count_start)}')
 
     # Process the latest transfer evaluations query file.
     latest_query = None
@@ -244,17 +261,16 @@ if __name__ == '__main__':
         if this_timestamp > latest_timestamp:
           latest_query = query_file
           latest_timestamp = this_timestamp
-    print(f'  Lookup transfers using {latest_query.name}')
+    print(f'Lookup transfers using {latest_query.name}')
     lookup_start = time.time()
-
-    report_name = f"./reports/{datetime.now().isoformat()[0:10]}.txt"
-    report = open(report_name, 'w')
+    print(f'{len(open(latest_query, errors="replace").readlines()):,}')
     num_transfers = defaultdict(int)
     student_sets = defaultdict(set)
     dst_courses = defaultdict(dst_course_factory)
     with open(latest_query, newline='', errors='replace') as query_file:
       reader = csv.reader(query_file)
       for line in reader:
+        print(f'\r{reader.line_num:,}', end='')
         if reader.line_num == 1:
           Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
         else:
@@ -270,11 +286,11 @@ if __name__ == '__main__':
             dst_offer_nbr = int(row.dst_offer_nbr)
             try:
               course_status = bkcr_courses[(dst_course_id, dst_offer_nbr)]
-              course_flags = ' B'
+              course_flags = 'B'
               if course_status == 'I':
                 course_flags += 'I'
             except KeyError as ke:
-              course_flags = ''
+              course_flags = 'I' if (dst_course_id, dst_offer_nbr) in inactive_courses else ''
 
             num_transfers[(src_institution, src_course, row.dst_institution)] += 1
             student_sets[src_institution, src_course, row.dst_institution].add(row.student_id)
@@ -292,7 +308,7 @@ if __name__ == '__main__':
                          row.dst_institution)][dst_course].rules = bkcr_rules[key].rules
           except KeyError as ke:
             pass
-    print(f'  Lookup took', elapsed(lookup_start))
+    print(f'\n  Lookup took', elapsed(lookup_start))
 
     print('Generate Report')
     report_start = time.time()
@@ -302,7 +318,7 @@ if __name__ == '__main__':
       # dst_institution is key[2]
       inst_dicts[key[2]][key] = (num_transfers[key], len(student_sets[key]))
 
-    # Write the institution dicts to txt and xlsx
+    # Write the institution dicts to xlsx
     centered = Alignment('center')
     bold = Font(bold=True)
     wb = Workbook()
@@ -317,11 +333,13 @@ if __name__ == '__main__':
         ws.cell(row, col + 1, headings[col]).alignment = Alignment(horizontal='center',
                                                                    vertical='top',
                                                                    wrapText=True)
-
+      row_counter = 0
+      print(f'\n{key[0:3]} {len(value):,}')
       for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+        row_counter += 1
+        print(f'\r    {row_counter:,}', end='')
         receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
                                for c, v in dst_courses[k].items()])
-        print(f'{key[0:3]}: {k[0][0:3]} {k[1]} {v[0]:6,}/{v[1]:6,}: {receivers}', file=report)
         receivers = receivers.replace(', ', '\n')
         # Create list of all rules that _might_ have been involved in transferring this course
         all_rules = [v.rules for v in dst_courses[k].values()]
@@ -336,21 +354,13 @@ if __name__ == '__main__':
         # receivers     Receiving courses
         # rules_set     Rule Keys
         # descriptions  Rule descriptions
-        descriptions = [f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}'
-                        for rule in rules_set]
-        print(descriptions, file=sys.stderr)
+        descriptions = []
+        is_problematic = False
+        for rule in rules_set:
+          descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
 
-        # highlight rows based on how problematic the situation is.
-        problematic_level = 0
-        # A row with a single rule, even if there were multiple receivers (re-evaluations,
-        # presumably) is a case where the course gets only bkcr: an "item of interest"
-        if len(rules_set) == 1:
-          problematic_level = 1
-        # A row with only one possible rule, even if there were multiple receivers is a case
-        # where there is no way (by completing other courses in combination with this one) to avoid
-        # bkcr: an "item of concern"
-        if num_rules == 1:
-          problematic_level = 2
+        if len(rules_set) == 1 and rule in rules_set:
+            is_problematic = True
 
         row_values = [k[0][0:3], k[1], v[0], v[1], receivers, '\n'.join(descriptions)]
 
@@ -364,15 +374,12 @@ if __name__ == '__main__':
           if col == 2 or col == 3:
             ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
             ws.cell(row, col + 1).number_format = '#,##0'
-          if problematic_level == 1:
+          if is_problematic:
             ws.cell(row, col + 1).font = Font(bold=True, color='800080')
-          if problematic_level == 2:
-            ws.cell(row, col + 1).font = Font(bold=True, color='ff0000')
 
     del wb['Sheet']
     wb.save('./reports/transfer_statistics.xlsx')
-    print('Report generation took', elapsed(report_start))
-    subprocess.run("pbcopy", universal_newlines=True, input=f'm {report_name}')
+    print('\nReport generation took', elapsed(report_start))
 
   print('Total time was', elapsed(session_start))
   exit()
