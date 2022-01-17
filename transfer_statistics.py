@@ -324,8 +324,8 @@ if __name__ == '__main__':
     wb = Workbook()
 
     for key, value in inst_dicts.items():
-      ws = wb.create_sheet(key)
-      headings = ['Sending College', 'Course', 'Num Evaluations', 'Num Students',
+      ws = wb.create_sheet(key[0:3])
+      headings = ['Sending College', 'Course', 'Number of Students', 'Number of Evaluations',
                   'Receiving Courses', 'Rules']
       row = 1
       for col in range(len(headings)):
@@ -349,8 +349,8 @@ if __name__ == '__main__':
             rules_set.add(rule_str)
         # k[0]          Sending College
         # k[1]          Sending Course
-        # v[0]          Number of evaluations
         # v[1]          Number of students
+        # v[0]          Number of evaluations
         # receivers     Receiving courses
         # rules_set     Rule Keys
         # descriptions  Rule descriptions
@@ -362,7 +362,7 @@ if __name__ == '__main__':
         if len(rules_set) == 1 and rule in rules_set:
             is_problematic = True
 
-        row_values = [k[0][0:3], k[1], v[0], v[1], receivers, '\n'.join(descriptions)]
+        row_values = [k[0][0:3], k[1], v[1], v[0], receivers, '\n'.join(descriptions)]
 
         row += 1
         for col in range(len(row_values)):
