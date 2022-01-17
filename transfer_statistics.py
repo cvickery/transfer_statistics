@@ -326,7 +326,7 @@ if __name__ == '__main__':
     for key, value in inst_dicts.items():
       ws = wb.create_sheet(key[0:3])
       headings = ['Sending College', 'Course', 'Number of Students', 'Number of Evaluations',
-                  'Receiving Courses', 'Rules']
+                  'Receiving Courses', 'Rule Descriptions']
       row = 1
       for col in range(len(headings)):
         ws.cell(row, col + 1, headings[col]).font = bold
