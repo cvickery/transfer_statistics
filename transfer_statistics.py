@@ -358,6 +358,7 @@ if __name__ == '__main__':
         is_problematic = False
         for rule in rules_set:
           descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
+        descriptions.sort()
 
         if len(rules_set) == 1 and rule in rules_set:
             is_problematic = True
