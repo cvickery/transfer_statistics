@@ -16,6 +16,8 @@ import subprocess
 import sys
 import time
 
+from adjustcolwidths import adjust_widths
+
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from openpyxl import Workbook, worksheet
@@ -84,7 +86,6 @@ if __name__ == '__main__':
   args = parser.parse_args()
   if args.build_bkcr_only:
     print('Building bkcr-only Dict')
-
     # Create list of (course_id, offer_nbr, dst) tuples where the course appears as part of a rule
     # that transfers only as BKCR.
     with psycopg.connect('dbname=cuny_curriculum') as conn:
@@ -92,7 +93,8 @@ if __name__ == '__main__':
         only_bkcr = defaultdict(list)
 
         cursor.execute("""
-        select s.course_id, s.offer_nbr, r.destination_institution as dest
+        select s.course_id, s.offer_nbr, r.destination_institution as dest, r.rule_key,
+               string_agg(to_char(d.course_id, '000000')||':'||d.offer_nbr, ' ') as dest_courses
         from source_courses s, transfer_rules r, destination_courses d
         where s.rule_id = d.rule_id
           and s.rule_id = r.id
@@ -100,11 +102,18 @@ if __name__ == '__main__':
                            from cuny_courses c
                           where c.course_id = d.course_id
                             and c.offer_nbr = d.offer_nbr)
+        group by s.course_id, s.offer_nbr, r.destination_institution, r.rule_key
         """)
-        for row in cursor:
-          only_bkcr[row.dest].append((row.course_id, row.offer_nbr))
-        total = sum([len(only_bkcr[institution]) for institution in only_bkcr.keys()])
-        print(f'{total:,} bkcr-only rules\n{elapsed(session_start)}')
+
+        with open('bkcr-only-rules.csv', 'w') as bkcr_only_file:
+          print(f'Source Course, Rule Key, Dest Course(s)', file=bkcr_only_file)
+          for row in cursor:
+            only_bkcr[row.dest].append((row.course_id, row.offer_nbr))
+            # Development Aid:
+            print(f'{row.course_id:06}:{row.offer_nbr}, {row.rule_key}, {row.dest_courses}',
+                  file=bkcr_only_file)
+          total = sum([len(only_bkcr[institution]) for institution in only_bkcr.keys()])
+          print(f'{total:,} bkcr-only rules\n{elapsed(session_start)}')
 
       # Find all rules for transferring each of the above courses to the destination institution.
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -319,14 +328,15 @@ if __name__ == '__main__':
       inst_dicts[key[2]][key] = (num_transfers[key], len(student_sets[key]))
 
     # Write the institution dicts to xlsx
+    # ---------------------------------------------------------------------------------------------
     centered = Alignment('center')
     bold = Font(bold=True)
     wb = Workbook()
 
     for key, value in inst_dicts.items():
       ws = wb.create_sheet(key[0:3])
-      headings = ['Sending College', 'Course', 'Number of Students', 'Number of Evaluations',
-                  'Receiving Courses', 'Rule Descriptions']
+      headings = ['Sending College', 'Sending Course', 'Number of Students',
+                  'Number of Evaluations', 'Receiving Courses', 'Rule Descriptions']
       row = 1
       for col in range(len(headings)):
         ws.cell(row, col + 1, headings[col]).font = bold
@@ -360,6 +370,8 @@ if __name__ == '__main__':
           descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
         descriptions.sort()
 
+        # A row is problematic if there is only one rule in the rules set: by definition, that's a
+        # bkcr rule
         if len(rules_set) == 1 and rule in rules_set:
             is_problematic = True
 
@@ -379,6 +391,11 @@ if __name__ == '__main__':
             ws.cell(row, col + 1).font = Font(bold=True, color='800080')
 
     del wb['Sheet']
+
+    # Adjust Column Widths
+    adjust_widths(wb)
+
+    # Finish up
     wb.save('./reports/transfer_statistics.xlsx')
     print('\nReport generation took', elapsed(report_start))
 
