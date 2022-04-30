@@ -208,12 +208,15 @@ if __name__ == "__main__":
         dest_list = []
         dest_credits = 0.0
         for dest in sorted(dests, key=lambda val: val['cat_num']):
-          if dest['is_mesg'] or dest['is_bkcr']:
+          if dest['is_mesg'] or dest['is_bkcr'] or dest['course_status'] != 'A':
             admins = []
             if dest['is_mesg']:
               admins.append('M')
             if dest['is_bkcr']:
               admins.append('B')
+            if dest['course_status'] != 'A':
+              assert dest['course_status'] == 'I', f"{dest['course_status']} is neither A nor I"
+              admins.append('I')
             credit_str = f' ({"+".join(admins)})'
           elif dest['transfer_credits'] == 99:
             credit_str = '(*)'

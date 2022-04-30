@@ -9,7 +9,7 @@ def adjust_widths(wb, widths: list = None) -> None:
       Default widths are the ones used for the transfer statistics workbook.
   """
   if widths is None:
-    widths = [8.0, 10.0, 10.0, 10.0, 20.0, 95.0]
+    widths = [8.0, 10.0, 10.0, 10.0, 20.0, 150.0]
 
   for sheet in wb.worksheets:
     for col, width in enumerate(widths, 1):
