@@ -80,12 +80,12 @@ if __name__ == '__main__':
 
   session_start = time.time()
   parser = argparse.ArgumentParser('Transfer Statistics App')
-  parser.add_argument('-b', '--build_bkcr_only', action='store_true')
+  parser.add_argument('-b', '--build_bkcr_course_rules', action='store_true')
   parser.add_argument('-c', '--count_transfers', action='store_true')
 
   args = parser.parse_args()
 
-  if args.build_bkcr_only:
+  if args.build_bkcr_course_rules:
     # =============================================================================================
     # Create dict of (course_id, offer_nbr) tuples, indexed by college, where the sending course
     # appears as part of a rule that transfers only as BKCR course(s).
@@ -155,10 +155,7 @@ if __name__ == '__main__':
         print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
         populate_start = time.time()
 
-    # Save the course_rules dict in the db so it doesn't have to be re-built for count_transfers
-    # with psycopg.connect('dbname=cuny_curriculum') as conn:
-    #   conn.autocommit = True
-    #   with conn.cursor() as cursor:
+    # Write the course_rules dict to the db for use in the count_transfers operation
         cursor.execute("""
         drop table if exists bkcr_course_rules;
         create table bkcr_course_rules (
@@ -199,10 +196,14 @@ if __name__ == '__main__':
     # Go through the transfer evaluations and count how often the courses with a bkcr-only rule
     # transferred as (a) bkcr and (b) with other destination course ids. Count, also, the distinct
     # set of students affected for each transferred course.
-    print('Count BKCR transfers')
+
+    # NEED TO COUNT STUDENTS WHO RECEIVED ONLY BKCR VERSUS MIX OF BKXR AND REAL (OR ONLY REAL) FOR
+    # EACH SOURCE COURSE
+
+    print('Count Transfers')
     count_start = time.time()
 
-    # Cache the bkcr_only_rules table
+    # Cache the bkcr_course_rules table built above
     RuleInfo = namedtuple('RuleInfo', 'source num_rules rules')
     bkcr_rules = dict()
     with psycopg.connect('dbname=cuny_curriculum') as conn:
@@ -345,7 +346,9 @@ if __name__ == '__main__':
     print(f'\n  Lookup took', elapsed(lookup_start))
 
     print('Generate Report')
+    # =============================================================================================
     report_start = time.time()
+
     # Create separate dict for each college
     institution_dicts = defaultdict(dd_factory)
     for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
@@ -353,7 +356,6 @@ if __name__ == '__main__':
       institution_dicts[key[2]][key] = (num_transfers[key], len(student_sets[key]))
 
     # Write the institution dicts to xlsx
-    # ---------------------------------------------------------------------------------------------
     centered = Alignment('center')
     bold = Font(bold=True)
     wb = Workbook()
