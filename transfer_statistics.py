@@ -4,8 +4,6 @@
     blanket credit.
     This is an alternate to count_transfers.py. This processes the CUNYfirst query output directly,
     whereas count_transfers.py worked from the transfers_applied table of the database.
-    2021-11-27: Ran the CUNYfirst query with a longer history (start term 1152) to try to get a
-    better sample size.
 """
 
 import argparse
@@ -244,7 +242,7 @@ if __name__ == '__main__':
           rule_descriptions[row.rule_key] = row.description
         print(f' {len(rule_descriptions):10,} rule descriptions.\t\t{elapsed(count_start)}')
 
-        # Cache metadata for all cuny courses
+        # Cache metadata for all cuny courses and credits for real courses
         meta_start = time.time()
         Metadata = namedtuple('Metadata', 'is_ugrad is_active is_mesg is_bkcr')
 
@@ -264,12 +262,14 @@ if __name__ == '__main__':
         setattr(Metadata, '__repr__', _meta_str_)
 
         metadata = dict()
+        real_credits = dict()
         cursor.execute("""
         select course_id, offer_nbr,
                career ~* '^U' as is_ugrad,
                course_status = 'A' as is_active,
                designation in ('MNL', 'MLA') as is_mesg,
-               attributes ~* 'bkcr' as is_bkcr
+               attributes ~* 'bkcr' as is_bkcr,
+               min_credits as credits
         from cuny_courses
         """)
         for row in cursor:
@@ -277,6 +277,10 @@ if __name__ == '__main__':
                                                                                row.is_active,
                                                                                row.is_mesg,
                                                                                row.is_bkcr])
+          if not (row.is_mesg or row.is_bkcr):
+            real_credits[(int(row.course_id), int(row.offer_nbr))] = float(row.credits)
+
+        print(f' {len(real_credits):10,} Real credits')
         print(f' {len(metadata):10,} Course metadata.\t\t{elapsed(count_start)}')
 
     # Process the latest transfer evaluations query file.
@@ -299,6 +303,7 @@ if __name__ == '__main__':
     print(f'{len(open(latest_query, errors="replace").readlines()):,}')
 
     num_transfers = defaultdict(int)
+    real_credits_awarded = defaultdict(float)
     student_sets = defaultdict(set)
     dst_courses = defaultdict(dst_course_factory)
 
@@ -312,6 +317,16 @@ if __name__ == '__main__':
           row = Row._make(line)
           key = (int(row.src_course_id), int(row.src_offer_nbr), row.dst_institution)
           try:
+            src_credits_earned = real_credits[(int(row.src_course_id), int(row.src_offer_nbr))]
+          except KeyError:
+            # Not as strange as it might seem. MEC gives 2 credits for a zero-credit “Global History
+            # Reg Prep” course at QCC, for example. Not sure this is intentional!
+
+            # print(f'Sending course has no real_credits: {row.student_id} {row.src_course_id}:'
+            #       f'{row.src_offer_nbr}', file=sys.stderr)
+            src_credits_earned = 0.0
+
+          try:
             src_institution = bkcr_rules[key].source
             num_rules = bkcr_rules[key].num_rules
             rule_keys = bkcr_rules[key].rules
@@ -320,10 +335,17 @@ if __name__ == '__main__':
 
             dst_course_id = int(row.dst_course_id)
             dst_offer_nbr = int(row.dst_offer_nbr)
+            try:
+              dst_real_credits = real_credits[(dst_course_id, dst_offer_nbr)]
+            except KeyError:
+              dst_real_credits = 0.0
             dst_meta = metadata[(dst_course_id, dst_offer_nbr)]
             dst_course_str = f'{row.dst_subject:>6} {row.dst_catalog_nbr.strip()}'
 
             num_transfers[(src_institution, src_course_str, row.dst_institution)] += 1
+            real_credits_awarded[(src_institution,
+                                  src_course_str,
+                                  row.dst_institution)] += dst_real_credits
             student_sets[src_institution, src_course_str, row.dst_institution].add(row.student_id)
 
             # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
@@ -341,7 +363,7 @@ if __name__ == '__main__':
                          row.dst_institution)][dst_course_str].rules = rule_keys
           except KeyError as ke:
             # These are transfers where there is no bkcr-only rule for the sending course
-            print(ke, file=sys.stderr)
+            # print(ke, file=sys.stderr)
             pass
     print(f'\n  Lookup took', elapsed(lookup_start))
 
@@ -397,8 +419,8 @@ if __name__ == '__main__':
           descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
         descriptions.sort()
 
-        # A row is problematic if there is only one rule in the rules set: by definition, that's a
-        # bkcr rule
+        # A row is problematic if the (average) real credits awarded is less than the number of
+        # credits earned
         if len(rules_set) == 1 and rule in rules_set:
             is_problematic = True
 
