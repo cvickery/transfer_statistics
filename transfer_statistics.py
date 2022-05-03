@@ -26,21 +26,19 @@ from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
-DstCourse = recordclass('DstCourse', 'flags count num_rules rules')
+DstCourse = recordclass('DstCourse', 'flags count num_rules rules_str')
 
 
-def stats_factory():
-  return {'student_ids': set(),
-          'src_institution': 'unknown',
-          'total_transfers': 0,
-          'distinct_transfers': 0}
-
-
-def dst_course_factory():
+def xfr_stats_factory():
+  """ Indexed by (src_institution, src_course_str, dst_institution)
+  """
   return defaultdict(course_set_factory)
 
 
 def course_set_factory():
+  """ Info about one destination course:
+        (flags, count num_rules, rules_str)
+  """
   return DstCourse._make(('', 0, 0, ''))
 
 
@@ -54,16 +52,6 @@ def dd_factory():
   """ For dict of dicts
   """
   return defaultdict(int)
-
-
-def chunks(lst, n):
-    """Yield successive n-sized chunks from lst.
-       Stack Overflow https://stackoverflow.com/questions/312443/
-                              how-do-you-split-a-list-into-evenly-sized-chunks
-       This method is used to prevent the psycopg-3 driver from failing on large queries.
-    """
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
 
 
 def elapsed(since: float):
@@ -128,7 +116,7 @@ if __name__ == '__main__':
             max_count = 0
             for row in cursor:
               if (row.course_id, row.offer_nbr) in only_bkcr[dest]:
-                rules_list = row.rules.split()
+                rules_list = row.rules_str.split()
 
                 # Gather statistics on how many rules there are per course-dst pair
                 if (list_len := len(rules_list)) > max_count:
@@ -202,7 +190,7 @@ if __name__ == '__main__':
     count_start = time.time()
 
     # Cache the bkcr_course_rules table built above
-    RuleInfo = namedtuple('RuleInfo', 'source num_rules rules')
+    RuleInfo = namedtuple('RuleInfo', 'source num_rules rules_str')
     bkcr_rules = dict()
     with psycopg.connect('dbname=cuny_curriculum') as conn:
       with conn.cursor(row_factory=namedtuple_row) as cursor:
@@ -316,7 +304,7 @@ if __name__ == '__main__':
     units_taken = defaultdict(list)
     real_credits_awarded = defaultdict(float)
     student_sets = defaultdict(set)
-    dst_courses = defaultdict(dst_course_factory)
+    xfr_info = defaultdict(xfr_stats_factory)
 
     with open(latest_query, newline='', errors='replace') as query_file:
       reader = csv.reader(query_file)
@@ -349,7 +337,7 @@ if __name__ == '__main__':
             continue
 
           num_rules = bkcr_rules[src_key].num_rules
-          rule_keys = bkcr_rules[src_key].rules
+          rule_keys = bkcr_rules[src_key].rules_str
 
           # For each source course, count the number of times it was transferred, how many
           # different students were involved (in case of re-evaluations), and each of the number
@@ -359,12 +347,13 @@ if __name__ == '__main__':
           src_course_str = f'{row.src_subject:>6} {row.src_catalog_nbr.strip()}'.strip()
           src_meta = metadata[(src_course_id, src_offer_nbr)]
           if src_course_str != src_meta.course_str():
-            print(f'Catalog course str ({src_meta.course_str()}) ne src course str '
+            print(f'Catalog course str ({src_meta.course_str()}) NE src course str '
                   f'({src_course_str}))', file=sys.stderr)
-          student_sets[src_institution, src_course_str, row.dst_institution].add(row.student_id)
-          num_transfers[(src_institution, src_course_str, row.dst_institution)] += 1
-          units_taken[(src_institution, src_course_str,
-                       row.dst_institution)].append(src_units_taken)
+
+          xfr_info_key = (src_institution, src_course_str, row.dst_institution)
+          student_sets[xfr_info_key].add(row.student_id)
+          num_transfers[xfr_info_key] += 1
+          units_taken[xfr_info_key].append(src_units_taken)
 
           # Transfer outcomes: what destination course was assigned, and what was its nature?
           dst_course_id = int(row.dst_course_id)
@@ -388,17 +377,15 @@ if __name__ == '__main__':
 
           # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
           # dst_course recordclass separately from updating it. (REPL works without it.)
-          dst_courses[(src_institution, src_course_str, row.dst_institution)][dst_course_str]
+          xfr_info[xfr_info_key][dst_course_str]
 
-          dst_courses[(src_institution, src_course_str,
-                       row.dst_institution)][dst_course_str].count += 1
-          dst_courses[(src_institution, src_course_str,
-                       row.dst_institution)][dst_course_str].flags = dst_meta
+          xfr_info[xfr_info_key][dst_course_str].count += 1
+          xfr_info[xfr_info_key][dst_course_str].flags = dst_meta
           # Looking for cases where there is only one rule, which will be bkcr by definition
-          dst_courses[(src_institution, src_course_str,
-                       row.dst_institution)][dst_course_str].num_rules = num_rules
-          dst_courses[(src_institution, src_course_str,
-                       row.dst_institution)][dst_course_str].rules = rule_keys
+          xfr_info[xfr_info_key][dst_course_str].num_rules = num_rules
+          xfr_info[xfr_info_key][dst_course_str].rules_str = rule_keys
+          # xfr_info[xfr_info_key]
+
     print(f'\n{zero_taken:9,} zero units taken\n{no_bkcr:9,} no bkcr-only rule')
     print(f'  Lookup took', elapsed(lookup_start))
 
@@ -407,19 +394,20 @@ if __name__ == '__main__':
     report_start = time.time()
     # Create separate dict for each college
     institution_dicts = defaultdict(dd_factory)
-    for key in sorted(num_transfers.keys(), key=lambda k: k[2]):
-      # dst_institution is key[2]
-      institution_dicts[key[2]][key] = (num_transfers[key], len(student_sets[key]))
+    for (src_institution, src_course_str, dst_institution) in sorted(num_transfers.keys(),
+                                                                     key=lambda k: k[2]):
+      key = (src_institution, src_course_str, dst_institution)
+      institution_dicts[dst_institution][key] = (num_transfers[key], len(student_sets[key]))
 
     # Write the institution dicts to xlsx
     centered = Alignment('center')
     bold = Font(bold=True)
     wb = Workbook()
 
-    for key, value in institution_dicts.items():
-      ws = wb.create_sheet(key[0:3])
+    for dst_institution, values in institution_dicts.items():
+      ws = wb.create_sheet(dst_institution[0:3])
       headings = ['Sending College', 'Sending Course', 'Number of Students',
-                  'Number of Evaluations', 'Receiving Courses', 'Rule Descriptions']
+                  'Number of Evaluations', 'Receiving Courses', 'Percent Real', 'Rule Descriptions']
       row = 1
       for col in range(len(headings)):
         ws.cell(row, col + 1, headings[col]).font = bold
@@ -427,21 +415,27 @@ if __name__ == '__main__':
                                                                    vertical='top',
                                                                    wrapText=True)
       row_counter = 0
-      print(f'\n{key[0:3]} {len(value):,}')
-      for k, v in sorted(value.items(), key=lambda kv: kv[1], reverse=True):
+      print(f'\n{dst_institution[0:3]} {len(values):,}')
+      for (src_institution,
+           src_course_str, _), (num_students,
+                                num_evaluations) in sorted(values.items(), key=lambda kv: kv[1],
+                                                           reverse=True):
+        print(num_students, num_evaluations)
         row_counter += 1
+        row_key = (src_institution, src_course_str, dst_institution)
         print(f'\r    {row_counter:,}', end='')
+
         receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
-                               for c, v in dst_courses[k].items()])
+                               for c, v in xfr_info[row_key].items()])
         receivers = receivers.replace(', ', '\n')
         # Create list of all rules that _might_ have been involved in transferring this course
-        all_rules = [v.rules for v in dst_courses[k].values()]
+        all_rules = [v.rules_str for v in xfr_info[k].values()]
         rules_set = set()
         for sublist in all_rules:
           for rule_str in sublist:
             rules_set.add(rule_str)
         # k[0]          Sending College
-        # k[1]          Sending Course
+        # k[1]          Sending Course String
         # v[1]          Number of students
         # v[0]          Number of evaluations
         # receivers     Receiving courses
