@@ -26,7 +26,7 @@ from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
-DstCourse = recordclass('DstCourse', 'flags count num_rules rules_str')
+DstCourse = recordclass('DstCourse', 'flags count')
 
 
 def xfr_stats_factory():
@@ -65,173 +65,174 @@ def elapsed(since: float):
 if __name__ == '__main__':
 
   session_start = time.time()
-  parser = argparse.ArgumentParser('Transfer Statistics App')
-  parser.add_argument('-b', '--build_bkcr_course_rules', action='store_true')
-  parser.add_argument('-c', '--count_transfers', action='store_true')
+  # parser = argparse.ArgumentParser('Transfer Statistics App')
+  # parser.add_argument('-b', '--build_bkcr_course_rules', action='store_true')
+  # parser.add_argument('-c', '--count_transfers', action='store_true')
+  # args = parser.parse_args()
 
-  args = parser.parse_args()
+  # Create dict of (src_course_id, src_offer_nbr, rule_keys) tuples, indexed by dst_institution,
+  # where the sending course appears as part of a rule that transfers with all or partial blanket
+  # credits.
+  print('Rules')
+  with psycopg.connect('dbname=cuny_curriculum') as conn:
+    with conn.cursor(row_factory=namedtuple_row) as cursor:
 
-  if args.build_bkcr_course_rules:
-    # =============================================================================================
-    # Create dict of (course_id, offer_nbr) tuples, indexed by college, where the sending course
-    # appears as part of a rule that transfers only as BKCR course(s).
-    print('Building bkcr-only Dict')
-    with psycopg.connect('dbname=cuny_curriculum') as conn:
-      with conn.cursor(row_factory=namedtuple_row) as cursor:
-        only_bkcr = defaultdict(list)
+      # cursor.execute("""
+      # select s.course_id, s.offer_nbr, r.destination_institution as dest
+      # from source_courses s, transfer_rules r, destination_courses d
+      # where s.rule_id = r.id
+      #   and d.rule_id = r.id
+      #   and true = ALL(select c.attributes ~* 'bkcr'
+      #                    from cuny_courses c
+      #                   where c.course_id = d.course_id
+      #                     and c.offer_nbr = d.offer_nbr)
+      # """)
+      cursor.execute("""
+      select s.course_id, s.offer_nbr, r.source_institution as source,
+             r.destination_institution as destination,
+             string_agg(rule_key, ' ') as rules
+      from source_courses s, transfer_rules r, destination_courses d
+      where s.rule_id = r.id
+        and d.rule_id = r.id
+        and (d.is_bkcr or d.is_mesg)
+      group by s.course_id, s.offer_nbr, source, destination
+      """)
+      src_courses = defaultdict(list)
+      for row in cursor:
+        src_courses[row.destination].append((row.course_id, row.offer_nbr,
+                                             row.source, row.rules.split()))
+      print(f'  {cursor.rowcount:10,} Source Courses\t{elapsed(session_start)}')
 
-        cursor.execute("""
-        select s.course_id, s.offer_nbr, r.destination_institution as dest
-        from source_courses s, transfer_rules r, destination_courses d
-        where s.rule_id = r.id
-          and d.rule_id = r.id
-          and true = ALL(select c.attributes ~* 'bkcr'
-                           from cuny_courses c
-                          where c.course_id = d.course_id
-                            and c.offer_nbr = d.offer_nbr)
-        """)
+      # # Find all rules for transferring each of the above courses to the destination institution.
+      # query = f"""
+      # select s.course_id, s.offer_nbr, string_agg(rule_key, ' ') as rules
+      #   from transfer_rules r, source_courses s
+      #  where r.destination_institution = %s
+      #    and s.rule_id = r.id
+      # group by course_id, offer_nbr
+      # """
+      # with open('bkcr-only.txt', 'w') as bkcr_only_file:
+      #   course_rules = dict()
+      #   for dest in sorted(only_bkcr.keys()):
+      #     dest_start = time.time()
+      #     rule_counts = []
+      #     print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):8,} only-bkcr rules')
 
-        for row in cursor:
-          only_bkcr[row.dest].append((row.course_id, row.offer_nbr))
-        total = sum([len(only_bkcr[institution]) for institution in only_bkcr.keys()])
-        print(f'{total:,} bkcr-only rules\n{elapsed(session_start)}')
+      #     cursor.execute(query, (dest, ))
+      #     min_count = 999
+      #     max_count = 0
+      #     for row in cursor:
+      #       if (row.course_id, row.offer_nbr) in only_bkcr[dest]:
+      #         rules_list = row.rules_str.split()
 
-        # Find all rules for transferring each of the above courses to the destination institution.
-        query = f"""
-        select s.course_id, s.offer_nbr, string_agg(rule_key, ' ') as rules
-          from transfer_rules r, source_courses s
-         where r.destination_institution = %s
-           and s.rule_id = r.id
-        group by course_id, offer_nbr
-        """
-        with open('bkcr-only.txt', 'w') as bkcr_only_file:
-          course_rules = dict()
-          for dest in sorted(only_bkcr.keys()):
-            dest_start = time.time()
-            rule_counts = []
-            print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):8,} only-bkcr rules')
+      #         # Gather statistics on how many rules there are per course-dst pair
+      #         if (list_len := len(rules_list)) > max_count:
+      #           max_count = list_len
+      #         if list_len < min_count:
+      #           min_count = list_len
 
-            cursor.execute(query, (dest, ))
-            min_count = 999
-            max_count = 0
-            for row in cursor:
-              if (row.course_id, row.offer_nbr) in only_bkcr[dest]:
-                rules_list = row.rules_str.split()
+      #         if (cursor.rownumber % 100) == 0:
+      #           print(f'\r  {cursor.rownumber:,} / {cursor.rowcount:,} total rules', end='')
 
-                # Gather statistics on how many rules there are per course-dst pair
-                if (list_len := len(rules_list)) > max_count:
-                  max_count = list_len
-                if list_len < min_count:
-                  min_count = list_len
+      #         rule_counts.append(len(rules_list))
+      #         course_rules[(row.course_id, row.offer_nbr, dest)] = rules_list
 
-                if (cursor.rownumber % 100) == 0:
-                  print(f'\r  {cursor.rownumber:,} / {cursor.rowcount:,} total rules', end='')
+      #     print('\r' + 80 * ' ' + f'\r  {elapsed(dest_start)}')
+      #     print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):,} Only-blanket rules',
+      #           f'\n   avg: {(sum(rule_counts) / len(rule_counts)):0.3f} rules per sending course'
+      #           f'\n   min: {min_count}'
+      #           f'\n   max: {max_count}', file=bkcr_only_file)
+      #     bkcr_only_file.flush()
+      #     # break  # Uncomment this to break after Baruch
 
-                rule_counts.append(len(rules_list))
-                course_rules[(row.course_id, row.offer_nbr, dest)] = rules_list
+  #     # print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
+  #     populate_start = time.time()
 
-            print('\r' + 80 * ' ' + f'\r  {elapsed(dest_start)}')
-            print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):,} Only-blanket rules',
-                  f'\n   avg: {(sum(rule_counts) / len(rule_counts)):0.3f} rules per sending course'
-                  f'\n   min: {min_count}'
-                  f'\n   max: {max_count}', file=bkcr_only_file)
-            bkcr_only_file.flush()
-            # break  # Uncomment this to break after Baruch
+  # # Write the course_rules dict to the db for use in the count_transfers operation
+  #     cursor.execute("""
+  #     drop table if exists bkcr_course_rules;
+  #     create table bkcr_course_rules (
+  #     course_id int,
+  #     offer_nbr int,
+  #     source text,
+  #     destination text,
+  #     num_rules int,
+  #     rules text,
+  #     primary key (course_id, offer_nbr, destination)
+  #     )
+  #     """)
+  #     with cursor.copy('copy bkcr_course_rules '
+  #                      '(course_id, offer_nbr, source, destination, num_rules, rules) '
+  #                      'from stdin') as copy:
+  #       counter = 0
+  #       total = len(course_rules)
+  #       for key, value in course_rules.items():
+  #         sources = set()
+  #         dests = set()
+  #         this_dest = key[2].upper()
+  #         dests.add(this_dest)
+  #         for rule in value:
+  #           parts = rule.split(':')
+  #           sources.add(parts[0])
+  #           dests.add(parts[1])
+  #         assert len(sources) == 1, f'{key} {value} {sources}'
+  #         assert len(dests) == 1, f'{key} {value} {dests}'
+  #         counter += 1
+  #         print(f'\r  {counter:,} / {total:,}', end='')
+  #         values = [key[0], key[1], sources.pop(), key[2], len(value), ' '.join(value)]
+  #         copy.write_row(values)
 
-        print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
-        populate_start = time.time()
+  #     print(f'\nPopulate took {elapsed(populate_start)}')
 
-    # Write the course_rules dict to the db for use in the count_transfers operation
-        cursor.execute("""
-        drop table if exists bkcr_course_rules;
-        create table bkcr_course_rules (
-        course_id int,
-        offer_nbr int,
-        source text,
-        destination text,
-        num_rules int,
-        rules text,
-        primary key (course_id, offer_nbr, destination)
-        )
-        """)
-        with cursor.copy('copy bkcr_course_rules '
-                         '(course_id, offer_nbr, source, destination, num_rules, rules) '
-                         'from stdin') as copy:
-          counter = 0
-          total = len(course_rules)
-          for key, value in course_rules.items():
-            sources = set()
-            dests = set()
-            this_dest = key[2].upper()
-            dests.add(this_dest)
-            for rule in value:
-              parts = rule.split(':')
-              sources.add(parts[0])
-              dests.add(parts[1])
-            assert len(sources) == 1, f'{key} {value} {sources}'
-            assert len(dests) == 1, f'{key} {value} {dests}'
-            counter += 1
-            print(f'\r  {counter:,} / {total:,}', end='')
-            values = [key[0], key[1], sources.pop(), key[2], len(value), ' '.join(value)]
-            copy.write_row(values)
-
-        print(f'\nPopulate took {elapsed(populate_start)}')
-
-  if args.count_transfers:
-    # =============================================================================================
     # Go through the transfer evaluations and count how often the courses with a bkcr-only rule
     # transferred as (a) bkcr and (b) with other destination course ids. Count, also, the distinct
     # set of students affected for each transferred course.
 
-    # NEED TO COUNT STUDENTS WHO RECEIVED ONLY BKCR VERSUS MIX OF BKXR AND REAL (OR ONLY REAL) FOR
-    # EACH SOURCE COURSE
+    # print('\nCount Transfers: Init')
+    # count_start = time.time()
 
-    print('\nCount Transfers: Init')
-    count_start = time.time()
+    # # Cache the bkcr_course_rules table built above
+    # RuleInfo = namedtuple('RuleInfo', 'source num_rules rules_str')
+    # bkcr_rules = dict()
+    #     cursor.execute('select * from bkcr_course_rules')
+    #     for row in cursor:
+    #       rules_list = row.rules.split()
+    #       bkcr_rules[(row.course_id,
+    #                   row.offer_nbr,
+    #                   row.destination)] = RuleInfo._make([row.source,
+    #                                                       row.num_rules,
+    #                                                       sorted(rules_list)])
 
-    # Cache the bkcr_course_rules table built above
-    RuleInfo = namedtuple('RuleInfo', 'source num_rules rules_str')
-    bkcr_rules = dict()
+    #     print(f' {len(bkcr_rules):10,} BKCR rules.\t\t\t{elapsed(count_start)}')
+
+    #     # List of rule_keys for bkcr-only rules
+    #     cursor.execute("""
+    #     select r.rule_key
+    #     from transfer_rules r, destination_courses d
+    #     where d.rule_id = r.id
+    #       and true = ALL(select c.attributes ~* 'bkcr'
+    #                        from cuny_courses c
+    #                       where c.course_id = d.course_id
+    #                         and c.offer_nbr = d.offer_nbr)
+    #     """)
+    #     bkcr_only_rule_keys = [row.rule_key for row in cursor]
+    #     print(f' {len(bkcr_only_rule_keys):10,} BKCR-only rule keys.\t{elapsed(count_start)}')
+
     with psycopg.connect('dbname=cuny_curriculum') as conn:
       with conn.cursor(row_factory=namedtuple_row) as cursor:
-        cursor.execute('select * from bkcr_course_rules')
-        for row in cursor:
-          rules_list = row.rules.split()
-          bkcr_rules[(row.course_id,
-                      row.offer_nbr,
-                      row.destination)] = RuleInfo._make([row.source,
-                                                          row.num_rules,
-                                                          sorted(rules_list)])
-
-        print(f' {len(bkcr_rules):10,} BKCR rules.\t\t\t{elapsed(count_start)}')
-
-        # List of rule_keys for bkcr-only rules
-        cursor.execute("""
-        select r.rule_key
-        from transfer_rules r, destination_courses d
-        where d.rule_id = r.id
-          and true = ALL(select c.attributes ~* 'bkcr'
-                           from cuny_courses c
-                          where c.course_id = d.course_id
-                            and c.offer_nbr = d.offer_nbr)
-        """)
-        bkcr_only_rule_keys = [row.rule_key for row in cursor]
-        print(f' {len(bkcr_only_rule_keys):10,} BKCR-only rule keys.\t{elapsed(count_start)}')
-
-        # Cache the decriptions of the rules referenced in bkcr_rules
+        count_start = time.time()
+        # Cache all decriptions
         rule_descriptions = defaultdict(rule_descriptions_factory)
         cursor.execute("""
         select rule_key, description
         from rule_descriptions
-        where rule_key in (select unnest(string_to_array(rules, E' '))
-        from bkcr_course_rules)
         """)
         for row in cursor:
           rule_descriptions[row.rule_key] = row.description
-        print(f' {len(rule_descriptions):10,} rule descriptions.\t\t{elapsed(count_start)}')
+        print(f'  {len(rule_descriptions):10,} Rule Descriptions\t{elapsed(count_start)}')
 
         # Cache metadata for all cuny courses, and credits for real courses. Note that this info is
-        # useful for receiving courses more than for sending courses, where Units Taken is what
+        # used for receiving courses rather than for sending courses, where Units Taken is what
         # counts.
         meta_start = time.time()
         Metadata = namedtuple('Metadata', 'subject catalog_number '
@@ -278,8 +279,8 @@ if __name__ == '__main__':
           if not (row.is_mesg or row.is_bkcr):
             real_credits[(int(row.course_id), int(row.offer_nbr))] = float(row.credits)
 
-        print(f' {len(real_credits):10,} Real credits')
-        print(f' {len(metadata):10,} Course metadata.\t\t{elapsed(count_start)}')
+        print(f'  {len(metadata):10,} Metadata\t\t{elapsed(count_start)}')
+        print(f'  {len(real_credits):10,} Real-credit courses')
 
     # Process the latest transfer evaluations query file.
     # ---------------------------------------------------
@@ -295,7 +296,8 @@ if __name__ == '__main__':
           latest_query = query_file
           latest_timestamp = this_timestamp
 
-    print(f'\nCount Transfers: Process {latest_query.name}')
+    print(f'\nTransfers {latest_query.name[0:-4].strip("-0123456789")} '
+          f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}')
 
     lookup_start = time.time()
     print(f'{len(open(latest_query, errors="replace").readlines()):,}')
@@ -326,7 +328,8 @@ if __name__ == '__main__':
 
           src_course_id = int(row.src_course_id)
           src_offer_nbr = int(row.src_offer_nbr)
-          src_key = (src_course_id, src_offer_nbr, row.dst_institution)
+          src_key = (src_course_id, src_offer_nbr)
+          row_key = src_key + (row.dst_institution, )
           try:
             src_institution = bkcr_rules[src_key].source
           except KeyError:
@@ -336,6 +339,7 @@ if __name__ == '__main__':
             no_bkcr += 1
             continue
 
+          row_key = (int(row.src_course_id), int(row.src_offer_nbr), row.dst_institution)
           num_rules = bkcr_rules[src_key].num_rules
           rule_keys = bkcr_rules[src_key].rules_str
 
