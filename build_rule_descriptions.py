@@ -217,7 +217,7 @@ if __name__ == "__main__":
             if dest['course_status'] != 'A':
               assert dest['course_status'] == 'I', f"{dest['course_status']} is neither A nor I"
               admins.append('I')
-            credit_str = f' ({"+".join(admins)})'
+            credit_str = f' ({"".join(admins)})'
           elif dest['transfer_credits'] == 99:
             credit_str = '(*)'
           else:
