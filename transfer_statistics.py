@@ -1,10 +1,36 @@
 #! /usr/local/bin/python3
-""" Count how often students transfer courses to a college. Using the source course_id:offer_nbr
-    and destination institution; count the number of cases where the course transfers only as
-    blanket credit.
-    This is an alternate to count_transfers.py. This processes the CUNYfirst query output directly,
-    whereas count_transfers.py worked from the transfers_applied table of the database.
+""" Count how often students transfer courses to a college and how many of their credits are
+    transferred as blanket credits (bkcr).
+
+    This code is an alternative to count_transfers.py, which simply ranks all courses transferred by
+    their frequency of transfer. Here, courses are still ranked by frequency, but also by the
+    percentage of credits that transfer as “real” course credits—those credits that have the
+    potential of counting towards a program's requirements rather than free-electives. We don't
+    count whether real courses actually do count towards program requirements ... yet. And we don't
+    look at how GenEd requirements factor into the transfer process ... yet.
+
+    This code gathers information about sending-side courses (“src_course”) from our database of
+    CUNY courses and transfer rules. It then goes through the spreadsheet from a CUNYfirst query
+    that reports details about all course transfers across CUNY colleges to gather information about
+    how each src_course transferred to each receiving college (dst_institution).
+
+    Everything is ogranized by dst_institutiion because the resulting workbook is organized as one
+    spreadsheet per receiving college.
+
+    Dictionaries
+      src_courses
+        Keys    [dst_institution][(src_course_id, src_offer_nbr)]
+        Values  SrcCourse(src_institution, course_str, transfer_rules)
+      rule_descriptions
+        Key     rule_key
+        Value   Natural language text
+      metadata
+        Key     (course_id, offer_nbr)
+        Values  Metadata(course_str, is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
+                .flags_str is textual representation of the five booleans
+
 """
+
 
 import argparse
 import csv
@@ -16,7 +42,7 @@ import time
 
 from adjustcolwidths import adjust_widths
 
-from collections import defaultdict, namedtuple
+from collections import Counter, defaultdict, namedtuple
 from datetime import datetime
 from openpyxl import Workbook, worksheet
 from openpyxl.styles import Alignment, Font
@@ -26,45 +52,9 @@ from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
-# Dict of info about sending courses and their associated xfer rules, indexed by
-# receiving college, where the sending course appears as part of one or more rules resulting
-# in blanket credit at the receiving college.
 
-# A SrcCourse is one that has one or more xfer rule that awards bkcr
-SrcCourse = namedtuple('SrcCourse', 'src_course_str, src_institution, rules')
-src_courses = defaultdict(dict)  # Index by (src_course_id, src_offer_nbr, dst_institution)
-
-# A DstCourse is a course on the receving side for a given SrcCourse-Receiver pair. The count
-# field is updated as the transfers file is processed; hence the use of recordclass rather than
-# namedtuple
-DstCourse = recordclass('DstCourse', 'course_str, flags count')
-
-
-def xfr_stats_factory():
-  """ Indexed by (src_course_id, src_offer_nbr, dst_institution)
-  """
-  return defaultdict(course_set_factory)
-
-
-def course_set_factory():
-  """ Info to show about one destination course:
-        (course_str, flags, count)
-  """
-  return DstCourse._make(('Unknown', '', 0))
-
-
-def rule_descriptions_factory():
-  """ Provide default value for rule_descriptions table rows not yet populated.
-  """
-  return 'Description not available'
-
-
-def dd_factory():
-  """ For dict of dicts
-  """
-  return defaultdict(int)
-
-
+# elapsed()
+# -------------------------------------------------------------------------------------------------
 def elapsed(since: float):
   """ Show the hours, minutes, and seconds that have elapsed since since seconds ago.
   """
@@ -76,26 +66,19 @@ def elapsed(since: float):
 if __name__ == '__main__':
 
   session_start = time.time()
-  # parser = argparse.ArgumentParser('Transfer Statistics App')
-  # parser.add_argument('-b', '--build_bkcr_course_rules', action='store_true')
-  # parser.add_argument('-c', '--count_transfers', action='store_true')
-  # args = parser.parse_args()
   log_file = open('transfer_statistics.log', 'w')
+
+  # Initialize From Curriculum Database
+  # ===============================================================================================
+
+  # A SrcCourse is one that has one or more xfer rules that awards bkcr
+  SrcCourse = namedtuple('SrcCourse', 'src_institution, course_str, rules')
+  src_courses = defaultdict(dict)  # Index by [dst_institution][src_course_id, src_offer_nbr]
+
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
 
       print('Rules')
-
-      # cursor.execute("""
-      # select s.course_id, s.offer_nbr, r.destination_institution as dest
-      # from source_courses s, transfer_rules r, destination_courses d
-      # where s.rule_id = r.id
-      #   and d.rule_id = r.id
-      #   and true = ALL(select c.attributes ~* 'bkcr'
-      #                    from cuny_courses c
-      #                   where c.course_id = d.course_id
-      #                     and c.offer_nbr = d.offer_nbr)
-      # """)
 
       cursor.execute("""
       select s.course_id, s.offer_nbr, s.discipline, s.catalog_number,
@@ -109,149 +92,35 @@ if __name__ == '__main__':
       group by s.course_id, s.offer_nbr, s.discipline, s.catalog_number, source_institution,
                destination_institution
       """)
+
       for row in cursor:
         course_str = f'{row.discipline.strip()} {row.catalog_number.strip()}'
-        src_key = (row.course_id, row.offer_nbr, row.destination_institution)
-        src_courses[src_key] = SrcCourse._make([course_str,
-                                                row.source_institution,
-                                                row.rules.split()])
+        src_key = (row.course_id, row.offer_nbr)
+        dest = row.destination_institution
+        src_courses[dest][src_key] = SrcCourse._make([row.source_institution,
+                                                      course_str,
+                                                      row.rules.split()])
       print(f'  {cursor.rowcount:10,} Sending Courses\t{elapsed(session_start)}')
 
-      # # Find all rules for transferring each of the above courses to the destination institution.
-      # query = f"""
-      # select s.course_id, s.offer_nbr, string_agg(rule_key, ' ') as rules
-      #   from transfer_rules r, source_courses s
-      #  where r.destination_institution = %s
-      #    and s.rule_id = r.id
-      # group by course_id, offer_nbr
-      # """
-      # with open('bkcr-only.txt', 'w') as bkcr_only_file:
-      #   course_rules = dict()
-      #   for dest in sorted(only_bkcr.keys()):
-      #     dest_start = time.time()
-      #     rule_counts = []
-      #     print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):8,} only-bkcr rules')
-
-      #     cursor.execute(query, (dest, ))
-      #     min_count = 999
-      #     max_count = 0
-      #     for row in cursor:
-      #       if (row.course_id, row.offer_nbr) in only_bkcr[dest]:
-      #         rules_list = row.rules_str.split()
-
-      #         # Gather statistics on how many rules there are per course-dst pair
-      #         if (list_len := len(rules_list)) > max_count:
-      #           max_count = list_len
-      #         if list_len < min_count:
-      #           min_count = list_len
-
-      #         if (cursor.rownumber % 100) == 0:
-      #           print(f'\r  {cursor.rownumber:,} / {cursor.rowcount:,} total rules', end='')
-
-      #         rule_counts.append(len(rules_list))
-      #         course_rules[(row.course_id, row.offer_nbr, dest)] = rules_list
-
-      #     print('\r' + 80 * ' ' + f'\r  {elapsed(dest_start)}')
-      #     print(f'\n{dest[0:3]}: {len(only_bkcr[dest]):,} Only-blanket rules',
-      #           f'\n   avg: {(sum(rule_counts) / len(rule_counts)):0.3f} rules per sending course'
-      #           f'\n   min: {min_count}'
-      #           f'\n   max: {max_count}', file=bkcr_only_file)
-      #     bkcr_only_file.flush()
-      #     # break  # Uncomment this to break after Baruch
-
-  #     # print(f'Build Total: {elapsed(session_start)}\n\nPopulate bkcr_course_rules Table')
-  #     populate_start = time.time()
-
-  # # Write the course_rules dict to the db for use in the count_transfers operation
-  #     cursor.execute("""
-  #     drop table if exists bkcr_course_rules;
-  #     create table bkcr_course_rules (
-  #     course_id int,
-  #     offer_nbr int,
-  #     source text,
-  #     destination text,
-  #     num_rules int,
-  #     rules text,
-  #     primary key (course_id, offer_nbr, destination)
-  #     )
-  #     """)
-  #     with cursor.copy('copy bkcr_course_rules '
-  #                      '(course_id, offer_nbr, source, destination, num_rules, rules) '
-  #                      'from stdin') as copy:
-  #       counter = 0
-  #       total = len(course_rules)
-  #       for key, value in course_rules.items():
-  #         sources = set()
-  #         dests = set()
-  #         this_dest = key[2].upper()
-  #         dests.add(this_dest)
-  #         for rule in value:
-  #           parts = rule.split(':')
-  #           sources.add(parts[0])
-  #           dests.add(parts[1])
-  #         assert len(sources) == 1, f'{key} {value} {sources}'
-  #         assert len(dests) == 1, f'{key} {value} {dests}'
-  #         counter += 1
-  #         print(f'\r  {counter:,} / {total:,}', end='')
-  #         values = [key[0], key[1], sources.pop(), key[2], len(value), ' '.join(value)]
-  #         copy.write_row(values)
-
-  #     print(f'\nPopulate took {elapsed(populate_start)}')
-
-    # Go through the transfer evaluations and count how often the courses with a bkcr-only rule
-    # transferred as (a) bkcr and (b) with other destination course ids. Count, also, the distinct
-    # set of students affected for each transferred course.
-
-    # print('\nCount Transfers: Init')
-    # count_start = time.time()
-
-    # # Cache the bkcr_course_rules table built above
-    # RuleInfo = namedtuple('RuleInfo', 'source num_rules rules_str')
-    # bkcr_rules = dict()
-    #     cursor.execute('select * from bkcr_course_rules')
-    #     for row in cursor:
-    #       rules_list = row.rules.split()
-    #       bkcr_rules[(row.course_id,
-    #                   row.offer_nbr,
-    #                   row.destination)] = RuleInfo._make([row.source,
-    #                                                       row.num_rules,
-    #                                                       sorted(rules_list)])
-
-    #     print(f' {len(bkcr_rules):10,} BKCR rules.\t\t\t{elapsed(count_start)}')
-
-    #     # List of rule_keys for bkcr-only rules
-    #     cursor.execute("""
-    #     select r.rule_key
-    #     from transfer_rules r, destination_courses d
-    #     where d.rule_id = r.id
-    #       and true = ALL(select c.attributes ~* 'bkcr'
-    #                        from cuny_courses c
-    #                       where c.course_id = d.course_id
-    #                         and c.offer_nbr = d.offer_nbr)
-    #     """)
-    #     bkcr_only_rule_keys = [row.rule_key for row in cursor]
-    #     print(f' {len(bkcr_only_rule_keys):10,} BKCR-only rule keys.\t{elapsed(count_start)}')
-
-      count_start = time.time()
-      # Cache all decriptions
-      rule_descriptions = defaultdict(rule_descriptions_factory)
+      # Cache all rule decriptions, previously stored in the cuny_curriculum db.
+      rule_descriptions = defaultdict(str)
       cursor.execute("""
       select rule_key, description
       from rule_descriptions
       """)
       for row in cursor:
         rule_descriptions[row.rule_key] = row.description
-      print(f'  {len(rule_descriptions):10,} Rule Descriptions\t{elapsed(count_start)}')
+      print(f'  {len(rule_descriptions):10,} Rule Descriptions\t{elapsed(session_start)}')
 
-      # Cache metadata for all cuny courses, and credits for real courses. Note that this info is
+      # Cache metadata for all cuny courses, and credits for real courses. Note: this info is
       # used only for receiving courses.
       meta_start = time.time()
-      Metadata = namedtuple('Metadata', 'discipline catalog_number '
+      Metadata = namedtuple('Metadata', 'course_str '
                                         'is_ugrad is_active is_mesg is_bkcr is_unknown')
 
-      def _meta_str_(self):
-        """ Flags to indicate if a course (probably) does not apply to an undergraduate program
-            requirement. Not undergraduate, Not active, mesg, and/or bkcr
+      def _flags_str(self):
+        """ String giving status of “interesting” settings of the Metadata boolean values.
+            Undergraduate-active-real courses will return the empty string.
         """
         return_str = ''
         if not self.is_ugrad:
@@ -265,11 +134,7 @@ if __name__ == '__main__':
         if self.is_unknown:
           return_str += '?'
         return return_str
-      setattr(Metadata, 'flags', _meta_str_)
-
-      def _course_str(self):
-        return f'{self.discipline.strip()} {self.catalog_number.strip()}'
-      setattr(Metadata, 'course_str', _course_str)
+      setattr(Metadata, 'flags', _flags_str)
 
       metadata = dict()  # Index by (course_id, offer_nbr)
       real_credit_courses = set()  # Members are (course_id, offer_nbr)
@@ -283,8 +148,8 @@ if __name__ == '__main__':
       from cuny_courses
       """)
       for row in cursor:
-        metadata[(row.course_id, row.offer_nbr)] = Metadata._make([row.discipline,
-                                                                   row.catalog_number,
+        course_str = f'{row.discipline.strip()} {row.catalog_number.strip()}'
+        metadata[(row.course_id, row.offer_nbr)] = Metadata._make([course_str,
                                                                    row.is_ugrad,
                                                                    row.is_active,
                                                                    row.is_mesg,
@@ -293,219 +158,225 @@ if __name__ == '__main__':
         if not (row.is_mesg or row.is_bkcr):
           real_credit_courses.add((row.course_id, row.offer_nbr))
 
-      print(f'  {len(metadata):10,} All courses\t{elapsed(count_start)}')
       print(f'  {len(real_credit_courses):10,} Real-credit courses')
-    exit()
-    # Process the latest transfer evaluations query file.
-    # ---------------------------------------------------
-    latest_query = None
-    query_files = Path('./downloads/').glob('*csv')
-    for query_file in query_files:
-      if latest_query is None:
+      print(f'  {len(metadata):10,} All courses\t{elapsed(session_start)}')
+
+  # Process latest transfer evaluations query file.
+  # =============================================================================================
+  latest_query = None
+  query_files = Path('./downloads/').glob('*csv')
+  for query_file in query_files:
+    if latest_query is None:
+      latest_query = query_file
+      latest_timestamp = query_file.stat().st_mtime
+    else:
+      this_timestamp = query_file.stat().st_mtime
+      if this_timestamp > latest_timestamp:
         latest_query = query_file
-        latest_timestamp = query_file.stat().st_mtime
+        latest_timestamp = this_timestamp
+
+  print(f'\nTransfer Statistics {latest_query.name[0:-4].strip("-0123456789")} '
+        f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}')
+  print(f'{len(open(latest_query, errors="replace").readlines()):,} Transfers')
+  lookup_start = time.time()
+
+  # XferCounts
+  # ----------
+  """ Indexed by [dst_institution]
+      How many records; how many ignored
+  """
+  XferCounts = recordclass('XferCounts', 'total not_bkcr')
+
+  def xfer_counts_factory():
+    return XferCounts._make([0, 0])
+
+  xfer_counts = defaultdict(xfer_counts_factory)
+  zero_units_taken = 0  # This is a src_institution value
+
+  # XferStats
+  # ---------
+  """ Indexed by [dst_institution][src_course]
+  """
+  DstCourse = recordclass('DstCourse', 'count flags')
+  XferStats = recordclass('XferStats', 'num_evaluations students_set '
+                          'units_taken real_credits bkcr_credits courses, rules')
+
+  def dst_course_factory():
+    return DstCourse._make([0, ''])
+
+  def xfer_stats_maker():
+    return XferStats._make((0, set(), 0.0, 0.0, 0.0, defaultdict(dst_course_factory), ''))
+
+  def xfer_stats_factory():
+    return defaultdict(xfer_stats_maker)
+
+  xfer_stats = defaultdict(xfer_stats_factory)
+
+  with open(latest_query, newline='', errors='replace') as query_file:
+    reader = csv.reader(query_file)
+    for line in reader:
+      print(f'\r{reader.line_num:,}', end='')
+      if reader.line_num == 1:
+        Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
       else:
-        this_timestamp = query_file.stat().st_mtime
-        if this_timestamp > latest_timestamp:
-          latest_query = query_file
-          latest_timestamp = this_timestamp
+        row = Row._make(line)
 
-    print(f'\nTransfers {latest_query.name[0:-4].strip("-0123456789")} '
-          f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}')
+        # Ignore how non-credit courses transfer. They are presumably used for things like
+        # Pathways exemptions, and not relevant for our analysis of which credit-bearing courses
+        # fail to transfer as real courses.
+        src_units_taken = float(row.units_taken)
+        if src_units_taken == 0.0:
+          zero_units_taken += 1
+          continue
 
-    lookup_start = time.time()
-    print(f'{len(open(latest_query, errors="replace").readlines()):,}')
+        src_course = (int(row.src_course_id), int(row.src_offer_nbr))
+        dst_institution = row.dst_institution
+        dst_course = (int(row.dst_course_id), int(row.dst_offer_nbr))
 
-    num_transfers = defaultdict(int)
-    units_taken = defaultdict(float)
-    bkcr_credits_awarded = defaultdict(float)
-    real_credits_awarded = defaultdict(float)
-    student_sets = defaultdict(set)
-    xfr_info = defaultdict(xfr_stats_factory)
-    no_problem = defaultdict(int)
+        xfer_counts[dst_institution].total += 1
+        if src_course not in src_courses[dst_institution].keys():
+          # Not a course of interest: no blanket credit rules for this course (although I guess
+          # bkcr could be awarded anyway)
+          xfer_counts[dst_institution].not_bkcr += 1
+          continue
+        dst_rule_descriptions = '\n'.join([rule_descriptions[rule_key]
+                                           for rule_key
+                                           in src_courses[dst_institution][src_course].rules])
 
-    zero_units_taken = 0
+        # Log cases where the subject and catalog number don't match current cuny_courses info.
+        src_course_str = f'{row.src_subject.strip()} {row.src_catalog_nbr.strip()}'
+        if src_course_str != src_courses[dst_institution][src_course].course_str:
+          print(f'Catalog course str ({src_courses[dst_institution][src_course].course_str}) '
+                f'NE src course str ({src_course_str}))', file=log_file)
 
-    with open(latest_query, newline='', errors='replace') as query_file:
-      reader = csv.reader(query_file)
-      for line in reader:
-        print(f'\r{reader.line_num:,}', end='')
-        if reader.line_num == 1:
-          Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
+        # For each source course, count the number of times it was transferred, how many different
+        # students were involved (in case of re-evaluations), the total number of units taken.
+        xfer_stats[dst_institution][src_course].num_evaluations += 1
+        xfer_stats[dst_institution][src_course].students_set.add(row.student_id)
+        xfer_stats[dst_institution][src_course].units_taken += src_units_taken
+
+        # Transfer outcomes: what destination course was assigned, and what was its nature?
+        dst_course_id = int(row.dst_course_id)
+        dst_offer_nbr = int(row.dst_offer_nbr)
+        dst_course = (dst_course_id, dst_offer_nbr)
+        dst_discipline = row.dst_subject.strip()
+        dst_catalog_nbr = row.dst_catalog_nbr.strip()
+        dst_course_str = f'{dst_discipline} {dst_catalog_nbr}'
+        try:
+          dst_meta = metadata[dst_course]
+        except KeyError:
+          # Gotta fake the metadata
+          # discipline catalog_number is_ugrad is_active is_mesg is_bkcr, is_unknown
+          dst_meta = Metadata._make([dst_course_str, False, False, False, False, True])
+        if dst_meta.course_str != dst_course_str:
+          print(f'Catalog course str ({dst_meta.course_str}) NE dst course str ({dst_course_str}))',
+                file=log_file)
+
+        units_transferred = float(row.units_transferred)
+        if dst_course in real_credit_courses:
+          xfer_stats[dst_institution][src_key].real_credits += units_transferred
         else:
-          row = Row._make(line)
-          # Ignore how non-credit courses transfer. They are presumably used for things like
-          # Pathways exemptions, and not relevant for our analysis of which credit-bearing courses
-          # fail to transfer as real courses.
-          src_units_taken = float(row.units_taken)
-          if src_units_taken == 0.0:
-            zero_units_taken += 1
-            continue
+          xfer_stats[dst_institution][src_key].bkcr_credits += units_transferred
 
-          src_course_id = int(row.src_course_id)
-          src_offer_nbr = int(row.src_offer_nbr)
-          dst_institution = row.dst_institution
-          src_key = (src_course_id, src_offer_nbr, dst_institution)
-          if src_key not in src_courses.keys():
-            # Not a course of interest: no blanket credit rules for this course
-            no_problem[dst_institution] += 1
-            continue
+        xfer_stats[dst_institution][src_key].courses[dst_course_str].count += 1
+        xfer_stats[dst_institution][src_key].courses[dst_course_str].flags = dst_meta.flags()
+        xfer_stats[dst_institution][src_key].rules = dst_rule_descriptions
+        breakpoint()
+  print('\r', 80 * ' ', f'\r{zero_units_taken:9,} zero units-taken xfers ignored')
+  print(f'Transfer Statistics took {elapsed(lookup_start)}')
+  print('\nPer Cent Transfer as Real Courses')
+  for institution in sorted(xfer_counts.keys()):
+    total = xfer_counts[institution].total
+    not_bkcr = xfer_counts[institution].not_bkcr
+    percent = 100.0 * not_bkcr / total
+    print(f'    {institution[0:3]} {not_bkcr:7,} / {total:<7,} = {percent:5.1f}%')
 
-          dst_key = (int(row.dst_course_id), int(row.dst_offer_nbr))  # index metadata
-          row_key = src_key                                           # index xfr_info
+  print('\nCount Transfers: Generate Report')
+  # =============================================================================================
+  report_start = time.time()
 
-          # For each source course, count the number of times it was transferred, how many
-          # different students were involved (in case of re-evaluations), and each of the number
-          # of units taken.
+  for dst_institution in sorted(xfer_counts.keys()):
+    # Sort institution’s src_course counts
+    print(dst_institution[0:3])
+    institution_dict = {key: xfer_stats[dst_institution][key] for key in xfer_stats[dst_institution]}
+    for key, value in institution_dict.items():
+      print(key, value)
+      exit('chk ur logs')
 
-          # Log cases where the subject and catalog number don't match current cuny_courses info.
-          src_course_str = f'{row.src_subject.strip()} {row.src_catalog_nbr.strip()}'
-          if src_course_str != src_courses[src_key]['course_str']:
-            print(f'Catalog course str ({src_courses[src_key]["course_str"]}) NE src course str '
-                  f'({src_course_str}))', file=log_file)
+  # Write the institution dicts to xlsx
+  centered = Alignment('center')
+  bold = Font(bold=True)
+  wb = Workbook()
 
-          student_sets[row_key].add(row.student_id)
-          num_transfers[row_key] += 1
-          units_taken[row_key] += src_units_taken
+  headings = ['Sending College', 'Sending Course', 'Number of Students',
+              'Re-evaluations', 'Percent Real', 'Receiving Courses', 'Rule Descriptions']
+  for dst_institution, values in institution_dicts.items():
+    ws = wb.create_sheet(dst_institution[0:3])
+    row = 1
+    for col in range(len(headings)):
+      ws.cell(row, col + 1, headings[col]).font = bold
+      ws.cell(row, col + 1, headings[col]).alignment = Alignment(horizontal='center',
+                                                                 vertical='top',
+                                                                 wrapText=True)
+    row_counter = 0
+    print(f'\n{dst_institution[0:3]} {len(values):,}')
+    for row_key, (num_students, num_evaluations) in sorted(values.items(), key=lambda kv: kv[1],
+                                                           reverse=True):
+      print(num_students, num_evaluations)
+      row_counter += 1
+      row_key = (src_institution, src_course_str, dst_institution)
+      print(f'\r    {row_counter:,}', end='')
 
-          # Transfer outcomes: what destination course was assigned, and what was its nature?
-          if dst_key in real_credit_courses:
-            dst_real_credits = float(row.units_transferred)
-          else:
-            dst_real_credits = 0.0
-          real_credits_awarded[row_key] += dst_real_credits
+      receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
+                             for c, v in xfer_stats[row_key].items()])
+      receivers = receivers.replace(', ', '\n')
+      # Create list of all rules that _might_ have been involved in transferring this course
+      all_rules = [v.rules_str for v in xfer_stats[row_key].values()]
+      rules_set = set()
+      for sublist in all_rules:
+        for rule_str in sublist:
+          rules_set.add(rule_str)
+      # k[0]          Sending College
+      # k[1]          Sending Course String
+      # v[1]          Number of students
+      # v[0]          Number of evaluations
+      # receivers     Receiving courses
+      # rules_set     Rule Keys
+      # descriptions  Rule descriptions
+      descriptions = []
+      is_problematic = False
+      for rule in rules_set:
+        descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
+      descriptions.sort()
 
-          dst_discipline = row.dst_subject.strip()
-          dst_catalog_nbr = row.dst_catalog_nbr.strip()
-          dst_course_str = f'{dst_discipline} {dst_catalog_nbr}'
-          try:
-            dst_meta = metadata[dst_key]
-          except KeyError:
-            # Gotta fake the metadata
-            # discipline catalog_number is_ugrad is_active is_mesg is_bkcr, is_unknown
-            dst_meta = Metadata._make([dst_discipline, dst_catalog_nbr,
-                                      False, False, False, False, True])
-          if dst_meta.course_str() != dst_course_str:
-            print(f'Catalog course str ({dst_meta.course_str()}) NE dst course str '
-                  f'({dst_course_str}))', file=log_file)
+      # A row is problematic if the (average) real credits awarded is less than the number of
+      # credits earned
+      if len(rules_set) == 1 and rule in rules_set:
+          is_problematic = True
+      percent_real = 'hello'
+      row_values = [row_key[0][0:3], k[1], num_students, num_evaluations - num_students,
+                    percent_real, receivers, '\n'.join(descriptions)]
 
-          # The next line is a mystery to me: it shouldn't be necessary explicitly to create the
-          # dst_course recordclass separately from updating it. (REPL works without it.)
-          # xfr_info[row_key][dst_key]
+      row += 1
+      for col in range(len(row_values)):
+        ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
+                                       else row_values[col].strip())
+        ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
+                                                    vertical='top',
+                                                    wrapText=True)
+        if col == 2 or col == 3:
+          ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
+          ws.cell(row, col + 1).number_format = '#,##0'
+        if is_problematic:
+          ws.cell(row, col + 1).font = Font(bold=True, color='800080')
 
-          xfr_info[row_key][dst_key].count += 1
-          xfr_info[row_key][dst_key].flags = dst_meta.flags
-          # xfr_info[row_key][dst_course_str].rules_str = rule_keys
+  del wb['Sheet']
 
-    print(f'\n{zero_units_taken:9,} zero units taken'
-          f'\n{no_problem:9,} no-bkcr xfers ignored')
-    print(f'  Lookup took', elapsed(lookup_start))
+  # Adjust Column Widths
+  adjust_widths(wb)
 
-    print('Count Transfers: Generate Report')
-    # =============================================================================================
-    """ The following dicts are all indexed by (src_course_id, src_offer_nbr, dest_institution):
-          num_transfers         Count number of transfer evaluations (includes re-evals)
-          student_sets          Count distinct students
-          units_taken           Sum of credits earned for sending course
-          real_credits_awarded  Sum of credits granted for non-bkcr coursss
-          bkcr_credits_awarded  Sum of credits granted for bkcr courses
-          xfer_info: Subdict of DstCourse indexed by (dst_course_id, dst_offer_nbr)
-            .count        Count number of times dst course was awarded
-            .course_str   “Discipline Catalog-Number”
-            .flags        Not Undergrad (G), Not Active (I), Message (M), Bkcr (B), Unknown (?)
-
-
-    """
-    report_start = time.time()
-
-    # Create separate dict for each college
-    institution_dicts = defaultdict(dd_factory)
-    for (src_institution, src_course_str, dst_institution) in sorted(num_transfers.keys(),
-                                                                     key=lambda k: k[2]):
-      key = (src_institution, src_course_str, dst_institution)
-      institution_dicts[dst_institution][key] = (num_transfers[key], len(student_sets[key]))
-
-    # Sort each institution dict by number of evaluations
-    for dst_institution, institution_dict in institution_dicts.items():
-      institution_dict[dst_institution] = sorted(institution_dict, reverse=True)
-    print(institution_dict.keys())
-    exit()
-
-    # Write the institution dicts to xlsx
-    centered = Alignment('center')
-    bold = Font(bold=True)
-    wb = Workbook()
-
-    headings = ['Sending College', 'Sending Course', 'Number of Students',
-                'Re-evaluations', 'Percent Real', 'Receiving Courses', 'Rule Descriptions']
-    for dst_institution, values in institution_dicts.items():
-      ws = wb.create_sheet(dst_institution[0:3])
-      row = 1
-      for col in range(len(headings)):
-        ws.cell(row, col + 1, headings[col]).font = bold
-        ws.cell(row, col + 1, headings[col]).alignment = Alignment(horizontal='center',
-                                                                   vertical='top',
-                                                                   wrapText=True)
-      row_counter = 0
-      print(f'\n{dst_institution[0:3]} {len(values):,}')
-      for row_key, (num_students, num_evaluations) in sorted(values.items(), key=lambda kv: kv[1],
-                                                             reverse=True):
-        print(num_students, num_evaluations)
-        row_counter += 1
-        row_key = (src_institution, src_course_str, dst_institution)
-        print(f'\r    {row_counter:,}', end='')
-
-        receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
-                               for c, v in xfr_info[row_key].items()])
-        receivers = receivers.replace(', ', '\n')
-        # Create list of all rules that _might_ have been involved in transferring this course
-        all_rules = [v.rules_str for v in xfr_info[row_key].values()]
-        rules_set = set()
-        for sublist in all_rules:
-          for rule_str in sublist:
-            rules_set.add(rule_str)
-        # k[0]          Sending College
-        # k[1]          Sending Course String
-        # v[1]          Number of students
-        # v[0]          Number of evaluations
-        # receivers     Receiving courses
-        # rules_set     Rule Keys
-        # descriptions  Rule descriptions
-        descriptions = []
-        is_problematic = False
-        for rule in rules_set:
-          descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
-        descriptions.sort()
-
-        # A row is problematic if the (average) real credits awarded is less than the number of
-        # credits earned
-        if len(rules_set) == 1 and rule in rules_set:
-            is_problematic = True
-        percent_real = 'hello'
-        row_values = [row_key[0][0:3], k[1], num_students, num_evaluations - num_students,
-                      percent_real, receivers, '\n'.join(descriptions)]
-
-        row += 1
-        for col in range(len(row_values)):
-          ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
-                                         else row_values[col].strip())
-          ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
-                                                      vertical='top',
-                                                      wrapText=True)
-          if col == 2 or col == 3:
-            ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
-            ws.cell(row, col + 1).number_format = '#,##0'
-          if is_problematic:
-            ws.cell(row, col + 1).font = Font(bold=True, color='800080')
-
-    del wb['Sheet']
-
-    # Adjust Column Widths
-    adjust_widths(wb)
-
-    # Finish up
-    wb.save('./reports/transfer_statistics.xlsx')
-    print('\nReport generation took', elapsed(report_start))
+  # Finish up
+  wb.save('./reports/transfer_statistics.xlsx')
+  print('\nReport generation took', elapsed(report_start))
 
   print('Total time was', elapsed(session_start))
-  exit()
