@@ -45,7 +45,7 @@ from adjustcolwidths import adjust_widths
 from collections import Counter, defaultdict, namedtuple
 from datetime import datetime
 from openpyxl import Workbook, worksheet
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import NamedStyle, Alignment, Font
 from pathlib import Path
 from psycopg.rows import namedtuple_row
 from recordclass import recordclass
@@ -115,7 +115,7 @@ if __name__ == '__main__':
       # Cache metadata for all cuny courses, and credits for real courses. Note: this info is
       # used only for receiving courses.
       meta_start = time.time()
-      Metadata = namedtuple('Metadata', 'course_str '
+      Metadata = namedtuple('Metadata', 'institution course_str '
                                         'is_ugrad is_active is_mesg is_bkcr is_unknown')
 
       def _flags_str(self):
@@ -140,7 +140,7 @@ if __name__ == '__main__':
       real_credit_courses = set()  # Members are (course_id, offer_nbr)
 
       cursor.execute("""
-      select course_id, offer_nbr, discipline, catalog_number,
+      select course_id, offer_nbr, institution, discipline, catalog_number,
              career ~* '^U' as is_ugrad,
              course_status = 'A' as is_active,
              designation in ('MNL', 'MLA') as is_mesg,
@@ -149,12 +149,13 @@ if __name__ == '__main__':
       """)
       for row in cursor:
         course_str = f'{row.discipline.strip()} {row.catalog_number.strip()}'
-        metadata[(row.course_id, row.offer_nbr)] = Metadata._make([course_str,
+        metadata[(row.course_id, row.offer_nbr)] = Metadata._make([row.institution,
+                                                                   course_str,
                                                                    row.is_ugrad,
                                                                    row.is_active,
                                                                    row.is_mesg,
                                                                    row.is_bkcr,
-                                                                   True])
+                                                                   False])
         if not (row.is_mesg or row.is_bkcr):
           real_credit_courses.add((row.course_id, row.offer_nbr))
 
@@ -239,11 +240,13 @@ if __name__ == '__main__':
           # bkcr could be awarded anyway)
           xfer_counts[dst_institution].not_bkcr += 1
           continue
-        dst_rule_descriptions = '\n'.join([rule_descriptions[rule_key]
-                                           for rule_key
-                                           in src_courses[dst_institution][src_course].rules])
+
+        dst_rule_descriptions = [f'{rule_descriptions[rule_key]}|{rule_key}'
+                                 for rule_key
+                                 in src_courses[dst_institution][src_course].rules]
 
         # Log cases where the subject and catalog number don't match current cuny_courses info.
+        # -------------------------------------------------------------------------------------
         src_course_str = f'{row.src_subject.strip()} {row.src_catalog_nbr.strip()}'
         if src_course_str != src_courses[dst_institution][src_course].course_str:
           print(f'Catalog course str ({src_courses[dst_institution][src_course].course_str}) '
@@ -267,21 +270,30 @@ if __name__ == '__main__':
         except KeyError:
           # Gotta fake the metadata
           # discipline catalog_number is_ugrad is_active is_mesg is_bkcr, is_unknown
-          dst_meta = Metadata._make([dst_course_str, False, False, False, False, True])
+          dst_meta = Metadata._make([dst_institution, dst_course_str,
+                                     False, False, False, False, True])
+
+        # Log cases where the subject and catalog number don't match current cuny_courses info.
+        # -------------------------------------------------------------------------------------
         if dst_meta.course_str != dst_course_str:
-          print(f'Catalog course str ({dst_meta.course_str}) NE dst course str ({dst_course_str}))',
+          print(f'Catalog course str ({dst_meta.course_str}) NE dst course str '
+                f'({dst_course_str}))', file=log_file)
+
+        dst_units_transferred = float(row.units_transferred)
+        if dst_units_transferred > src_units_taken:
+          print(f'More received ({dst_units_transferred}) than sent ({src_units_taken})'
+                f'{row.student_id} {row.src_course_id:06}:{row.src_offer_nbr} => '
+                f'{row.dst_course_id:06}:{row.dst_offer_nbr}',
                 file=log_file)
-
-        units_transferred = float(row.units_transferred)
         if dst_course in real_credit_courses:
-          xfer_stats[dst_institution][src_key].real_credits += units_transferred
+          xfer_stats[dst_institution][src_course].real_credits += dst_units_transferred
         else:
-          xfer_stats[dst_institution][src_key].bkcr_credits += units_transferred
+          xfer_stats[dst_institution][src_course].bkcr_credits += dst_units_transferred
 
-        xfer_stats[dst_institution][src_key].courses[dst_course_str].count += 1
-        xfer_stats[dst_institution][src_key].courses[dst_course_str].flags = dst_meta.flags()
-        xfer_stats[dst_institution][src_key].rules = dst_rule_descriptions
-        breakpoint()
+        xfer_stats[dst_institution][src_course].courses[dst_course_str].count += 1
+        xfer_stats[dst_institution][src_course].courses[dst_course_str].flags = dst_meta.flags()
+        xfer_stats[dst_institution][src_course].rules = dst_rule_descriptions
+
   print('\r', 80 * ' ', f'\r{zero_units_taken:9,} zero units-taken xfers ignored')
   print(f'Transfer Statistics took {elapsed(lookup_start)}')
   print('\nPer Cent Transfer as Real Courses')
@@ -295,88 +307,102 @@ if __name__ == '__main__':
   # =============================================================================================
   report_start = time.time()
 
-  for dst_institution in sorted(xfer_counts.keys()):
-    # Sort institution’s src_course counts
-    print(dst_institution[0:3])
-    institution_dict = {key: xfer_stats[dst_institution][key] for key in xfer_stats[dst_institution]}
-    for key, value in institution_dict.items():
-      print(key, value)
-      exit('chk ur logs')
-
-  # Write the institution dicts to xlsx
-  centered = Alignment('center')
-  bold = Font(bold=True)
   wb = Workbook()
+  # Cell formatting options
+  bold = Font(bold=True)
 
-  headings = ['Sending College', 'Sending Course', 'Number of Students',
-              'Re-evaluations', 'Percent Real', 'Receiving Courses', 'Rule Descriptions']
-  for dst_institution, values in institution_dicts.items():
+  center_top = NamedStyle('center_top')
+  center_top.alignment = Alignment(horizontal='center', vertical='top', wrapText=True)
+  center_top.font = bold
+  wb.add_named_style(center_top)
+
+  left_top = NamedStyle('left_top')
+  left_top.alignment = Alignment(horizontal='left', vertical='top', wrapText=True)
+  wb.add_named_style(left_top)
+
+  counter_format = NamedStyle('counter_format')
+  counter_format.alignment = Alignment(vertical='top')
+  counter_format.number_format = '#,##0'
+  wb.add_named_style(counter_format)
+
+  decimal_format = NamedStyle('decimal_format')
+  decimal_format.alignment = Alignment(vertical='top')
+  decimal_format.number_format = '0.0'
+  wb.add_named_style(decimal_format)
+
+  highlighted = Font(bold=True, color='800080')
+
+  headings = ['Sending College', 'Sending Course', 'Students', 'Repeats', 'Sending Cr',
+              'Real', 'BKCR', '% Real', 'Receiving Courses', 'Rule Descriptions', 'Rule Keys']
+
+  for dst_institution in sorted(xfer_counts.keys()):
+    print(f'\n{dst_institution[0:3]}', file=log_file)
     ws = wb.create_sheet(dst_institution[0:3])
-    row = 1
     for col in range(len(headings)):
-      ws.cell(row, col + 1, headings[col]).font = bold
-      ws.cell(row, col + 1, headings[col]).alignment = Alignment(horizontal='center',
-                                                                 vertical='top',
-                                                                 wrapText=True)
-    row_counter = 0
-    print(f'\n{dst_institution[0:3]} {len(values):,}')
-    for row_key, (num_students, num_evaluations) in sorted(values.items(), key=lambda kv: kv[1],
-                                                           reverse=True):
-      print(num_students, num_evaluations)
-      row_counter += 1
-      row_key = (src_institution, src_course_str, dst_institution)
-      print(f'\r    {row_counter:,}', end='')
+      ws.cell(1, col + 1, headings[col]).style = 'center_top'
 
-      receivers = ', '.join([f'{c} [{v.count:,}]{v.flags}'
-                             for c, v in xfer_stats[row_key].items()])
-      receivers = receivers.replace(', ', '\n')
-      # Create list of all rules that _might_ have been involved in transferring this course
-      all_rules = [v.rules_str for v in xfer_stats[row_key].values()]
-      rules_set = set()
-      for sublist in all_rules:
-        for rule_str in sublist:
-          rules_set.add(rule_str)
-      # k[0]          Sending College
-      # k[1]          Sending Course String
-      # v[1]          Number of students
-      # v[0]          Number of evaluations
-      # receivers     Receiving courses
-      # rules_set     Rule Keys
-      # descriptions  Rule descriptions
-      descriptions = []
-      is_problematic = False
-      for rule in rules_set:
-        descriptions.append(f'{rule[12:].replace(":", " ")}: {rule_descriptions[rule]}')
-      descriptions.sort()
+    # Sort dst_institution’s src_course counts
+    institution_dict = {key: xfer_stats[dst_institution][key]
+                        for key in xfer_stats[dst_institution]}
+    row_keys = list(institution_dict.keys())
+    row_keys = sorted(row_keys, key=lambda k: institution_dict[k].num_evaluations, reverse=True)
+    ws_row_index = 1
+    for row_key in row_keys:
 
-      # A row is problematic if the (average) real credits awarded is less than the number of
-      # credits earned
-      if len(rules_set) == 1 and rule in rules_set:
-          is_problematic = True
-      percent_real = 'hello'
-      row_values = [row_key[0][0:3], k[1], num_students, num_evaluations - num_students,
-                    percent_real, receivers, '\n'.join(descriptions)]
+      ws_row_index += 1
+      src_meta = metadata[row_key]
+      ws.cell(ws_row_index, 1, src_meta.institution).style = 'left_top'
+      if flags_str := src_meta.flags():
+        flags_str = f' [{flags_str}]'
+      ws.cell(ws_row_index, 2, f'{src_meta.course_str}{flags_str}').style = 'left_top'
 
-      row += 1
-      for col in range(len(row_values)):
-        ws.cell(row, col + 1).value = (row_values[col] if isinstance(row_values[col], int)
-                                       else row_values[col].strip())
-        ws.cell(row, col + 1).alignment = Alignment(horizontal='left',
-                                                    vertical='top',
-                                                    wrapText=True)
-        if col == 2 or col == 3:
-          ws.cell(row, col + 1).alignment = Alignment(horizontal='right', vertical='top')
-          ws.cell(row, col + 1).number_format = '#,##0'
-        if is_problematic:
-          ws.cell(row, col + 1).font = Font(bold=True, color='800080')
+      num_evaluations = institution_dict[row_key].num_evaluations
+      num_students = len(institution_dict[row_key].students_set)
+      num_reevaluations = (num_evaluations - num_students)
+      assert num_reevaluations >= 0
+      ws.cell(ws_row_index, 3, num_students).style = 'counter_format'
+      ws.cell(ws_row_index, 4, num_reevaluations).style = 'counter_format'
 
+      units_taken = institution_dict[row_key].units_taken / num_evaluations
+      real_credits = institution_dict[row_key].real_credits / num_evaluations
+      bkcr_credits = institution_dict[row_key].bkcr_credits / num_evaluations
+      credits_lost = units_taken - (real_credits + bkcr_credits)
+      percent_real = (100.0 * real_credits) / (real_credits + bkcr_credits + credits_lost)
+      do_highlight = percent_real < 50.0
+      ws.cell(ws_row_index, 5, units_taken).style = 'decimal_format'
+      ws.cell(ws_row_index, 6, real_credits).style = 'decimal_format'
+      ws.cell(ws_row_index, 7, bkcr_credits).style = 'decimal_format'
+      ws.cell(ws_row_index, 8, percent_real).style = 'decimal_format'
+
+      courses_list = []
+      for course in institution_dict[row_key].courses:
+        flags_str = institution_dict[row_key].courses[course].flags
+        if flags_str:
+          flags_str = f' [{flags_str}]'
+        courses_list.append(f'{course}{flags_str} '
+                            f'({institution_dict[row_key].courses[course].count:,})')
+      ws.cell(ws_row_index, 9, '\n'.join(courses_list)).style = 'left_top'
+
+      rule_descriptions = []
+      rule_keys = []
+      for rule in institution_dict[row_key].rules:
+        rule_description, rule_key = rule.split('|')
+        rule_descriptions.append(rule_description)
+        rule_keys.append(rule_key)
+      ws.cell(ws_row_index, 10, '\n'.join(rule_descriptions)).style = 'left_top'
+      ws.cell(ws_row_index, 11, '\n'.join(rule_keys)).style = 'left_top'
+
+      if do_highlight:
+        for col_index in range(1, len(headings) + 1):
+          ws.cell(ws_row_index, col_index).font = highlighted
+
+    print(dst_institution, f'{ws_row_index:6,}')
+
+  # Clean up
   del wb['Sheet']
-
-  # Adjust Column Widths
-  adjust_widths(wb)
-
-  # Finish up
+  adjust_widths(wb, [8.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 20.0, 150.0, 20.0])
   wb.save('./reports/transfer_statistics.xlsx')
-  print('\nReport generation took', elapsed(report_start))
 
-  print('Total time was', elapsed(session_start))
+  print('\nReport time\t', elapsed(report_start))
+
+  print('Total time\t', elapsed(session_start))
