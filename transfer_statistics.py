@@ -81,16 +81,22 @@ if __name__ == '__main__':
       print('Rules')
 
       cursor.execute("""
-      select s.course_id, s.offer_nbr, s.discipline, s.catalog_number,
-             r.source_institution,
-             r.destination_institution,
+      select src.course_id, src.offer_nbr, src.discipline, src.catalog_number,
+             rules.source_institution,
+             rules.destination_institution,
              string_agg(rule_key, ' ') as rules
-      from source_courses s, transfer_rules r, destination_courses d
-      where s.rule_id = r.id
-        and d.rule_id = r.id
-        and (d.is_bkcr or d.is_mesg)
-      group by s.course_id, s.offer_nbr, s.discipline, s.catalog_number, source_institution,
-               destination_institution
+      from source_courses src, transfer_rules rules, destination_courses dst
+      where (src.course_id, src.offer_nbr, rules.destination_institution) in
+            (select s.course_id, s.offer_nbr, r.destination_institution
+               from source_courses s, transfer_rules r, destination_courses d
+               where s.rule_id = r.id
+                 and d.rule_id = r.id
+                 and (d.is_bkcr or d.is_mesg)
+               group by s.course_id, s.offer_nbr, r.destination_institution)
+        and src.rule_id = rules.id
+        and dst.rule_id = rules.id
+      group by src.course_id, src.offer_nbr, src.discipline, src.catalog_number,
+               rules.source_institution, rules.destination_institution
       """)
 
       for row in cursor:
