@@ -14,7 +14,7 @@
     that reports details about all course transfers across CUNY colleges to gather information about
     how each src_course transferred to each receiving college (dst_institution).
 
-    Everything is ogranized by dst_institutiion because the resulting workbook is organized as one
+    Everything is ogranized by dst_institution because the resulting workbook is organized as one
     spreadsheet per receiving college.
 
     Dictionaries
