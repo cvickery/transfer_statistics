@@ -67,6 +67,7 @@ if __name__ == '__main__':
 
   session_start = time.time()
   log_file = open('transfer_statistics.log', 'w')
+  report_file = open(f'./reports/{datetime.today().isoformat()[0:10]}_report.txt', 'w')
 
   # Initialize From Curriculum Database
   # ===============================================================================================
@@ -78,7 +79,7 @@ if __name__ == '__main__':
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
 
-      print('Rules')
+      print('Collect Transfer Rules')
 
       cursor.execute("""
       select src.course_id, src.offer_nbr, src.discipline, src.catalog_number,
@@ -182,8 +183,10 @@ if __name__ == '__main__':
         latest_query = query_file
         latest_timestamp = this_timestamp
 
-  print(f'\nTransfer Statistics {latest_query.name[0:-4].strip("-0123456789")} '
+  print(f'\nGenerate Statistics {latest_query.name[0:-4].strip("-0123456789")} '
         f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}')
+  print(f'\nTransfer Statistics {latest_query.name[0:-4].strip("-0123456789")} '
+        f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}', file=report_file)
   print(f'{len(open(latest_query, errors="replace").readlines()):,} Transfers')
   lookup_start = time.time()
 
@@ -218,7 +221,10 @@ if __name__ == '__main__':
     return defaultdict(xfer_stats_maker)
 
   xfer_stats = defaultdict(xfer_stats_factory)
-
+  first_post = datetime.today()
+  last_post = datetime(1900, 1, 1)
+  first_term = 9999
+  last_term = 0
   with open(latest_query, newline='', errors='replace') as query_file:
     reader = csv.reader(query_file)
     for line in reader:
@@ -227,6 +233,27 @@ if __name__ == '__main__':
         Row = namedtuple('Row', [c.lower().replace(' ', '_') for c in line])
       else:
         row = Row._make(line)
+
+        try:
+          articulation_term = int(row.articulation_term)
+          if articulation_term > last_term:
+            last_term = articulation_term
+          if articulation_term < first_term:
+            first_term = articulation_term
+        except ValueError as ve:
+          print(f'Ignoring articulation_term on line {reader.line_num:,}: '
+                f'“{row.articulation_term}”', file=log_file)
+
+        try:
+          m, d, y = row.posted_date.split('/')
+          posted_date = datetime(int(y), int(m), int(d))
+          if posted_date > last_post:
+            last_post = posted_date
+          if posted_date < first_post:
+            first_post = posted_date
+        except ValueError as ve:
+          print(f'Ignoring posted_date on line {reader.line_num:,}: '
+                f'“{row.posted_date}”', file=log_file)
 
         # Ignore how non-credit courses transfer. They are presumably used for things like
         # Pathways exemptions, and not relevant for our analysis of which credit-bearing courses
@@ -287,7 +314,7 @@ if __name__ == '__main__':
 
         dst_units_transferred = float(row.units_transferred)
         if dst_units_transferred > src_units_taken:
-          print(f'More received ({dst_units_transferred}) than sent ({src_units_taken})'
+          print(f'More received ({dst_units_transferred}) than sent ({src_units_taken}) '
                 f'{row.student_id} {row.src_course_id:06}:{row.src_offer_nbr} => '
                 f'{row.dst_course_id:06}:{row.dst_offer_nbr}',
                 file=log_file)
@@ -301,16 +328,25 @@ if __name__ == '__main__':
         xfer_stats[dst_institution][src_course].rules = dst_rule_descriptions
 
   print('\r', 80 * ' ', f'\r{zero_units_taken:9,} zero units-taken xfers ignored')
+  print(f'First Post: {first_post.isoformat()[0:10]}\nLast Post:  {last_post.isoformat()[0:10]}',
+        file=report_file)
+  print(f'First Term: {first_term}\nLast Term:  {last_term}', file=report_file)
   print(f'Transfer Statistics took {elapsed(lookup_start)}')
-  print('\nPer Cent Transfer as Real Courses')
+  print('\nCourses Transferred as Real Courses', file=report_file)
+  grand_total = grand_not_bkcr = 0
   for institution in sorted(xfer_counts.keys()):
     total = xfer_counts[institution].total
+    grand_total += total
     not_bkcr = xfer_counts[institution].not_bkcr
+    grand_not_bkcr += not_bkcr
     percent = 100.0 * not_bkcr / total
-    print(f'    {institution[0:3]} {not_bkcr:7,} / {total:<7,} = {percent:5.1f}%')
+    print(f'    {institution[0:3]} {not_bkcr:9,} / {total:<9,} = {percent:5.1f}%', file=report_file)
+  percent = 100.0 * grand_not_bkcr / grand_total
+  print(f'    ALL {grand_not_bkcr:9,} / {grand_total:<9,} = {percent:5.1f}%', file=report_file)
 
-  print('\nCount Transfers: Generate Report')
+  print('\nGenerate Report')
   # =============================================================================================
+  print('\nSpreadsheet Summary', file=report_file)
   report_start = time.time()
 
   wb = Workbook()
@@ -402,13 +438,16 @@ if __name__ == '__main__':
         for col_index in range(1, len(headings) + 1):
           ws.cell(ws_row_index, col_index).font = highlighted
 
-    print(dst_institution, f'{ws_row_index:6,}')
+    print(f'{dst_institution} {ws_row_index:6,} rows', file=report_file)
 
   # Clean up
+
   del wb['Sheet']
   adjust_widths(wb, [8.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 20.0, 150.0, 20.0])
-  wb.save('./reports/transfer_statistics.xlsx')
+  wb.save(f'./reports/{datetime.today().isoformat()[0:10]}_transfer_statistics.xlsx')
 
   print('\nReport time\t', elapsed(report_start))
-
   print('Total time\t', elapsed(session_start))
+
+  log_file.close()
+  report_file.close()
