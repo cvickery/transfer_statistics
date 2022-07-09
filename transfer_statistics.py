@@ -69,6 +69,25 @@ if __name__ == '__main__':
   log_file = open('transfer_statistics.log', 'w')
   report_file = open(f'./reports/{datetime.today().isoformat()[0:10]}_report.txt', 'w')
 
+  # Check CUNYfirst data is current
+  latest_query = None
+  query_files = Path('./downloads/').glob('*csv')
+  for query_file in query_files:
+    if latest_query is None:
+      latest_query = query_file
+      latest_timestamp = query_file.stat().st_mtime
+    else:
+      this_timestamp = query_file.stat().st_mtime
+      if this_timestamp > latest_timestamp:
+        latest_query = query_file
+        latest_timestamp = this_timestamp
+  file_date = f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}'
+  file_age = (datetime.today() - datetime.fromisoformat(file_date)).days
+  if file_age > 7:
+    exit(f'CUNYfirst info from ({latest_query}) file is {file_age} days old')
+  s = '' if file_age == 1 else 's'
+  print(f'CUNYfirst query ({latest_query}) is {file_age} day{s} old.')
+
   # Initialize From Curriculum Database
   # ===============================================================================================
 
@@ -85,6 +104,8 @@ if __name__ == '__main__':
       days = (datetime.today() - datetime.fromisoformat(update_date)).days
       if days > 7:
         exit(f'rule_descriptions have not been updated in {days} days.')
+      s = '' if days == 1 else 's'
+      print(f'Rule descriptions were updated {days} day{s} ago.')
 
       print('Collect Transfer Rules')
 
@@ -173,31 +194,19 @@ if __name__ == '__main__':
         if not (row.is_mesg or row.is_bkcr):
           real_credit_courses.add((row.course_id, row.offer_nbr))
 
-      print(f'  {len(real_credit_courses):10,} Real-credit courses')
+      print(f'  {len(real_credit_courses):10,} Real-credit courses', file=report_file)
       print(f'  {len(metadata):10,} All courses\t{elapsed(session_start)}')
 
   # Process latest transfer evaluations query file.
   # =============================================================================================
-  latest_query = None
-  query_files = Path('./downloads/').glob('*csv')
-  for query_file in query_files:
-    if latest_query is None:
-      latest_query = query_file
-      latest_timestamp = query_file.stat().st_mtime
-    else:
-      this_timestamp = query_file.stat().st_mtime
-      if this_timestamp > latest_timestamp:
-        latest_query = query_file
-        latest_timestamp = this_timestamp
-  file_date = f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}'
-  file_age = (datetime.today() - datetime.fromisoformat(file_date)).days
-  if file_age > 7:
-    print(f'WARNING: data file is {file_age} days old', file=sys.stderr)
+
   print(f'\nGenerate Statistics {latest_query.name[0:-4].strip("-0123456789")} {file_date}'
         )
   print(f'\nTransfer Statistics {latest_query.name[0:-4].strip("-0123456789")} '
         f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}', file=report_file)
-  print(f'{len(open(latest_query, errors="replace").readlines()):,} Transfers')
+
+  print(f'{len(open(latest_query, errors="replace").readlines()):11,} Transfer records',
+        file=report_file)
   lookup_start = time.time()
 
   # XferCounts
@@ -337,12 +346,14 @@ if __name__ == '__main__':
         xfer_stats[dst_institution][src_course].courses[dst_course_str].flags = dst_meta.flags()
         xfer_stats[dst_institution][src_course].rules = dst_rule_descriptions
 
-  print('\r', 80 * ' ', f'\r{zero_units_taken:9,} zero units-taken xfers ignored')
-  print(f'First Post: {first_post.isoformat()[0:10]}\nLast Post:  {last_post.isoformat()[0:10]}',
+  print(f'{zero_units_taken:11,} Zero-credit sending courses ignored', file=report_file)
+  print(f'\nTransfer Statistics took {elapsed(lookup_start)}')
+
+  print(f'First Post: {first_post.isoformat()[0:10]}\n Last Post: {last_post.isoformat()[0:10]}',
         file=report_file)
-  print(f'First Term: {first_term}\nLast Term:  {last_term}', file=report_file)
-  print(f'Transfer Statistics took {elapsed(lookup_start)}')
-  print('\nCourses Transferred as Real Courses', file=report_file)
+  print(f'First Term: {first_term}\n Last Term: {last_term}', file=report_file)
+
+  print(f'\nCourses Transferred as Real Courses', file=report_file)
   grand_total = grand_not_bkcr = 0
   for institution in sorted(xfer_counts.keys()):
     total = xfer_counts[institution].total
@@ -447,8 +458,8 @@ if __name__ == '__main__':
       if do_highlight:
         for col_index in range(1, len(headings) + 1):
           ws.cell(ws_row_index, col_index).font = highlighted
-
-    print(f'{dst_institution} {ws_row_index:6,} rows', file=report_file)
+    s = '' if ws_row_index == 1 else 's'
+    print(f'{dst_institution} {ws_row_index:6,} row{s}', file=report_file)
 
   # Clean up
 
