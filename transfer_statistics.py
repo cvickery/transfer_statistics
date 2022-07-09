@@ -79,6 +79,13 @@ if __name__ == '__main__':
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
 
+      # Be sure rule descriptions are up to date
+      cursor.execute("select update_date from updates where table_name = 'rule_descriptions'")
+      update_date = cursor.fetchone().update_date
+      days = (datetime.today() - datetime.fromisoformat(update_date)).days
+      if days > 7:
+        exit(f'rule_descriptions have not been updated in {days} days.')
+
       print('Collect Transfer Rules')
 
       cursor.execute("""
@@ -182,9 +189,12 @@ if __name__ == '__main__':
       if this_timestamp > latest_timestamp:
         latest_query = query_file
         latest_timestamp = this_timestamp
-
-  print(f'\nGenerate Statistics {latest_query.name[0:-4].strip("-0123456789")} '
-        f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}')
+  file_date = f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}'
+  file_age = (datetime.today() - datetime.fromisoformat(file_date)).days
+  if file_age > 7:
+    print(f'WARNING: data file is {file_age} days old', file=sys.stderr)
+  print(f'\nGenerate Statistics {latest_query.name[0:-4].strip("-0123456789")} {file_date}'
+        )
   print(f'\nTransfer Statistics {latest_query.name[0:-4].strip("-0123456789")} '
         f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}', file=report_file)
   print(f'{len(open(latest_query, errors="replace").readlines()):,} Transfers')

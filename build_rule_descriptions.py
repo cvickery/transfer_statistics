@@ -28,6 +28,7 @@ import sys
 import time
 
 from collections import namedtuple, defaultdict
+from datetime import datetime
 from psycopg.rows import namedtuple_row
 
 
@@ -226,7 +227,7 @@ if __name__ == "__main__":
         rules[rule.rule_key] += ' and '.join(dest_list)
 
       print(f'\nFormating Complete {elapsed(format_start)}')
-      print('Generate Report')
+      print('Generate rule_descriptions table')
       generate_start = time.time()
       cursor.execute("""
         drop table if exists rule_descriptions;
@@ -235,8 +236,13 @@ if __name__ == "__main__":
         description text)
         """)
 
-      with cursor.copy("copy rule_descriptions (rule_key, description) from stdin") as report:
+      with cursor.copy("copy rule_descriptions (rule_key, description) from stdin") as descriptions:
         for k, v in rules.items():
-          report.write_row((k, f'{v[0].upper()+v[1:]}'))
+          descriptions.write_row((k, f'{v[0].upper()+v[1:]}'))
+      cursor.execute(f"""
+      update updates
+         set update_date = '{datetime.today().isoformat()[0:10]}'
+       where table_name = 'rule_descriptions'
+      """)
       print('Generate Complete', elapsed(generate_start))
   exit(elapsed(session_start))
