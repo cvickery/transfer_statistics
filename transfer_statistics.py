@@ -1,36 +1,34 @@
 #! /usr/local/bin/python3
-""" Count how often students transfer courses to a college and how many of their credits are
-    transferred as blanket credits (bkcr).
+"""Count transferred courses and how many credits transfer as blanket credits (bkcr).
 
-    This code is an alternative to count_transfers.py, which simply ranks all courses transferred by
-    their frequency of transfer. Here, courses are still ranked by frequency, but also by the
-    percentage of credits that transfer as “real” course credits—those credits that have the
-    potential of counting towards a program's requirements rather than free-electives. We don't
-    count whether real courses actually do count towards program requirements ... yet. And we don't
-    look at how GenEd requirements factor into the transfer process ... yet.
+This code is an alternative to count_transfers.py, which simply ranks all courses transferred by
+their frequency of transfer. Here, courses are still ranked by frequency, but also by the percentage
+of credits that transfer as “real” course credits—those credits that have the potential of counting
+towards a program's requirements rather than free-electives. We don't count whether real courses
+actually do count towards program requirements ... yet. And we don't look at how GenEd requirements
+factor into the transfer process ... yet.
 
-    This code gathers information about sending-side courses (“src_course”) from our database of
-    CUNY courses and transfer rules. It then goes through the spreadsheet from a CUNYfirst query
-    that reports details about all course transfers across CUNY colleges to gather information about
-    how each src_course transferred to each receiving college (dst_institution).
+This code gathers information about sending-side courses (“src_course”) from our database of CUNY
+courses and transfer rules. It then goes through the spreadsheet from a CUNYfirst query that reports
+details about all course transfers across CUNY colleges to gather information about how each
+src_course transferred to each receiving college (dst_institution).
 
-    Everything is ogranized by dst_institution because the resulting workbook is organized as one
-    spreadsheet per receiving college.
+Everything is ogranized by dst_institution because the resulting workbook is organized as one
+spreadsheet per receiving college.
 
-    Dictionaries
-      src_courses
-        Keys    [dst_institution][(src_course_id, src_offer_nbr)]
-        Values  SrcCourse(src_institution, course_str, transfer_rules)
-      rule_descriptions
-        Key     rule_key
-        Value   Natural language text
-      metadata
-        Key     (course_id, offer_nbr)
-        Values  Metadata(course_str, is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
-                .flags_str is textual representation of the five booleans
+Dictionaries
+  src_courses
+    Keys    [dst_institution][(src_course_id, src_offer_nbr)]
+    Values  SrcCourse(src_institution, course_str, transfer_rules)
+  rule_descriptions
+    Key     rule_key
+    Value   Natural language text
+  metadata
+    Key     (course_id, offer_nbr)
+    Values  Metadata(course_str, is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
+            .flags_str is textual representation of the five booleans
 
 """
-
 
 import argparse
 import csv
@@ -56,8 +54,7 @@ DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 # elapsed()
 # -------------------------------------------------------------------------------------------------
 def elapsed(since: float):
-  """ Show the hours, minutes, and seconds that have elapsed since since seconds ago.
-  """
+  """Return the hours, minutes, and seconds since “since” seconds ago."""
   h, ms = divmod(int(time.time() - since), 3600)
   m, s = divmod(ms, 60)
   return f'{h:02}:{m:02}:{s:02}'
@@ -71,7 +68,7 @@ if __name__ == '__main__':
 
   # Check CUNYfirst data is current
   latest_query = None
-  query_files = Path('./downloads/').glob('*csv')
+  query_files = Path('./downloads/').glob('CV_QNS_XFER_STATS*csv')
   for query_file in query_files:
     if latest_query is None:
       latest_query = query_file
