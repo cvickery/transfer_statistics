@@ -30,19 +30,16 @@ Dictionaries
 
 """
 
-import argparse
 import csv
 import os
 import psycopg
-import subprocess
-import sys
 import time
 
 from adjustcolwidths import adjust_widths
 
-from collections import Counter, defaultdict, namedtuple
+from collections import defaultdict, namedtuple
 from datetime import datetime
-from openpyxl import Workbook, worksheet
+from openpyxl import Workbook
 from openpyxl.styles import NamedStyle, Alignment, Font
 from pathlib import Path
 from psycopg.rows import namedtuple_row
@@ -256,7 +253,7 @@ if __name__ == '__main__':
             last_term = articulation_term
           if articulation_term < first_term:
             first_term = articulation_term
-        except ValueError as ve:
+        except ValueError:
           print(f'Ignoring articulation_term on line {reader.line_num:,}: '
                 f'“{row.articulation_term}”', file=log_file)
 
@@ -267,7 +264,7 @@ if __name__ == '__main__':
             last_post = posted_date
           if posted_date < first_post:
             first_post = posted_date
-        except ValueError as ve:
+        except ValueError:
           print(f'Ignoring posted_date on line {reader.line_num:,}: '
                 f'“{row.posted_date}”', file=log_file)
 
@@ -350,7 +347,7 @@ if __name__ == '__main__':
         file=report_file)
   print(f'First Term: {first_term}\n Last Term: {last_term}', file=report_file)
 
-  print(f'\nCourses Transferred as Real Courses', file=report_file)
+  print('\nCourses Transferred as Real Courses', file=report_file)
   grand_total = grand_not_bkcr = 0
   for institution in sorted(xfer_counts.keys()):
     total = xfer_counts[institution].total

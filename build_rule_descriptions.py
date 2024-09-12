@@ -21,10 +21,7 @@
       floating point number with 1 decimal place, the sum of credits for the sending courses.
       The B, I, and M flags are for blanket, inactive, and message course.
 """
-import os
-import json
 import psycopg
-import sys
 import time
 
 from collections import namedtuple, defaultdict
@@ -107,10 +104,14 @@ def and_list(items):
   """
   assert isinstance(items, list)
   match len(items):
-    case 0: return ''
-    case 1: return items[0]
-    case 2: return f'{items[0]} and {items[1]}'
-    case _: return ', '.join(items[0:-1]) + f', and {items[-1]}'
+    case 0:
+      return ''
+    case 1:
+      return items[0]
+    case 2:
+      return f'{items[0]} and {items[1]}'
+    case _:
+      return ', '.join(items[0:-1]) + f', and {items[-1]}'
 
 
 # main()

@@ -2,8 +2,6 @@
 """ Query the transfer rules to count number of rules where the receiving side is all BKCR.
 """
 
-import os
-import sys
 from collections import Counter
 
 import psycopg

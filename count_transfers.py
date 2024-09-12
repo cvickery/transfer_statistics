@@ -2,8 +2,6 @@
 """ Count how often students transfer courses to a college.
 """
 
-import os
-import sys
 
 import psycopg
 from psycopg.rows import namedtuple_row
