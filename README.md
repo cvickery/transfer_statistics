@@ -5,12 +5,16 @@ Tabulate the way courses transfer as blanket credits between CUNY institutions.
 
 ## Setup
 Run the query CV\_QNS\_XFER\_STATS on CUNYfirst and copy the resulting csv file to downloads.
-The Criteria tab is where the articulation term range is hard-coded.
+There is a prompt for the earliest articulation term to include.
 
 Run the local command (build\_rule\_descriptions.py* to update the *rule\_descriptions* table in the cuny_curriculum database.
 
+These two steps must be completed within the last seven days to be able to proceed to the next step.
+
 ## Generate Reports
 **Usage:** `transfer_statistics.py [-b] [-c]`
+
+
 
 Use the `-b` option to generate a database table of transfer rules where a course transfers only as
 a blanket credit course
