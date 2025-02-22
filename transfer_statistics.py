@@ -25,7 +25,8 @@ Dictionaries
     Value   Natural language text
   metadata
     Key     (course_id, offer_nbr)
-    Values  Metadata(course_str, is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
+    Values  Metadata(institution, course_str,
+                     is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
             .flags_str is textual representation of the five booleans
 
 """
@@ -36,7 +37,7 @@ import psycopg
 import time
 
 from adjustcolwidths import adjust_widths
-
+from transfer_by_subjects import create_sender_subject_workbook
 from collections import defaultdict, namedtuple
 from datetime import datetime
 from openpyxl import Workbook
@@ -46,6 +47,8 @@ from psycopg.rows import namedtuple_row
 from recordclass import recordclass
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
+
+metadata = dict()  # Index by (course_id, offer_nbr)
 
 
 # elapsed()
@@ -165,7 +168,6 @@ if __name__ == '__main__':
         return return_str
       setattr(Metadata, 'flags', _flags_str)
 
-      metadata = dict()  # Index by (course_id, offer_nbr)
       real_credit_courses = set()  # Members are (course_id, offer_nbr)
 
       cursor.execute("""
@@ -466,3 +468,17 @@ if __name__ == '__main__':
 
   log_file.close()
   report_file.close()
+
+  print('\nGenerate Institution Reports')
+  for dst_institution in sorted(xfer_counts.keys()):
+    print(f'\nProcessing {dst_institution}')
+    institution_dict = {key: xfer_stats[dst_institution][key]
+                        for key in xfer_stats[dst_institution]}
+
+    wb = create_sender_subject_workbook(dst_institution, institution_dict)
+    try:
+      wb.save(f'./reports/{datetime.today().isoformat()[0:10]}_'
+              f'{dst_institution}_transfer_statistics.xlsx')
+      print(f'Created workbook for {dst_institution}')
+    except IndexError:
+      print(f'No active sheets for {dst_institution}')
