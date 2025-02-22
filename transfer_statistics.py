@@ -475,6 +475,7 @@ if __name__ == '__main__':
     institution_dict = {key: xfer_stats[dst_institution][key]
                         for key in xfer_stats[dst_institution]}
 
+    # Get workbook for this institution
     wb = create_sender_subject_workbook(dst_institution, institution_dict)
     try:
       wb.save(f'./reports/{datetime.today().isoformat()[0:10]}_'
