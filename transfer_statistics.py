@@ -46,9 +46,12 @@ from pathlib import Path
 from psycopg.rows import namedtuple_row
 from recordclass import recordclass
 
-DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
+# Metadata is a namedtuple with info about a course
+# metadata is a dict indexed by (course_id, offer_nbr)
+# real_credit_courses is a set of (course_id, offer_nbr)
+from shared_metadata import Metadata, metadata, real_credit_courses
 
-metadata = dict()  # Index by (course_id, offer_nbr)
+DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
 
 
 # elapsed()
@@ -143,55 +146,6 @@ if __name__ == '__main__':
       for row in cursor:
         rule_descriptions[row.rule_key] = row.description
       print(f'  {len(rule_descriptions):10,} Rule Descriptions\t{elapsed(session_start)}')
-
-      # Cache metadata for all cuny courses, and credits for real courses. Note: this info is
-      # used only for receiving courses.
-      meta_start = time.time()
-      Metadata = namedtuple('Metadata', 'institution course_str '
-                                        'is_ugrad is_active is_mesg is_bkcr is_unknown')
-
-      def _flags_str(self):
-        """ String giving status of “interesting” settings of the Metadata boolean values.
-            Undergraduate-active-real courses will return the empty string.
-        """
-        return_str = ''
-        if not self.is_ugrad:
-          return_str += 'G'
-        if not self.is_active:
-          return_str += 'I'
-        if self.is_mesg:
-          return_str += 'M'
-        if self.is_bkcr:
-          return_str += 'B'
-        if self.is_unknown:
-          return_str += '?'
-        return return_str
-      setattr(Metadata, 'flags', _flags_str)
-
-      real_credit_courses = set()  # Members are (course_id, offer_nbr)
-
-      cursor.execute("""
-      select course_id, offer_nbr, institution, discipline, catalog_number,
-             career ~* '^U' as is_ugrad,
-             course_status = 'A' as is_active,
-             designation in ('MNL', 'MLA') as is_mesg,
-             attributes ~* 'bkcr' as is_bkcr
-      from cuny_courses
-      """)
-      for row in cursor:
-        course_str = f'{row.discipline.strip()} {row.catalog_number.strip()}'
-        metadata[(row.course_id, row.offer_nbr)] = Metadata._make([row.institution,
-                                                                   course_str,
-                                                                   row.is_ugrad,
-                                                                   row.is_active,
-                                                                   row.is_mesg,
-                                                                   row.is_bkcr,
-                                                                   False])
-        if not (row.is_mesg or row.is_bkcr):
-          real_credit_courses.add((row.course_id, row.offer_nbr))
-
-      print(f'  {len(real_credit_courses):10,} Real-credit courses', file=report_file)
-      print(f'  {len(metadata):10,} All courses\t{elapsed(session_start)}')
 
   # Process latest transfer evaluations query file.
   # =============================================================================================
