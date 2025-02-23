@@ -33,15 +33,14 @@ def _flags_str(self):
 
 # init
 # -------------------------------------------------------------------------------------------------
-# Info about courses: initialized and used by transfer_statisics; used by transfer_by_subjects
+# Info about courses: initialized here, and used by transfer_statisics and destination_departments
 
 setattr(Metadata, 'flags', _flags_str)
 
 with psycopg.connect('dbname=cuny_curriculum') as conn:
   with conn.cursor(row_factory=namedtuple_row) as cursor:
 
-    # Cache metadata for all cuny courses, and credits for real courses. Note: this info is
-    # used only for receiving courses.
+    # Cache metadata for all cuny courses, and create set of real courses.
     cursor.execute("""
     select course_id, offer_nbr, institution, discipline, catalog_number,
           career ~* '^U' as is_ugrad,
