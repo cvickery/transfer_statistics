@@ -34,7 +34,10 @@ from typing import Any
 # Module Initializtion
 # =================================================================================================
 _id_to_key = dict()
+_all_to_keys = dict()
+_disciplines = dict()
 _discipline_to_department = defaultdict()
+_department_names = dict()
 _sending_courses = defaultdict(set)
 _receiving_courses = defaultdict(set)
 
@@ -44,6 +47,15 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
     # Setup access by ID or rule_key
     cursor.execute('select id, rule_key from transfer_rules')
     _id_to_key = {row.id: row.rule_key for row in cursor.fetchall()}
+
+    # All rule_keys where receiver is QCC or QNS
+    cursor.execute("""
+    select rule_key
+      from transfer_rules
+     where rule_key ~* ':(QCC01|QNS01):'
+    """)
+    _all_to_keys = sorted([row.rule_key for row in cursor.fetchall()],
+                          key=lambda key: key[6:11])
 
     # Dict of discipline to department mappings, keyed by (institution, discipline)
     cursor.execute("""
@@ -65,7 +77,24 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
     #       print(key, value, file=sys.stderr)
     # print(f'{len(_discipline_to_department)=}', file=sys.stderr)
 
-    # cache metadata for sending side and receiving side courses, indexed by rule_key
+    # Department Names
+    cursor.execute("""
+    select institution, department, department_name
+      from cuny_departments
+     where department_status = 'A'
+    """)
+    _department_names = {(row.institution, row.department): row.department_name for row in cursor}
+
+    cursor.execute("""
+    select *
+      from cuny_disciplines
+     where status = 'A'
+       and department !~* '01$'
+       and department !~* '^(PERMIT-|REG-|ADMIN-|PROV-|MISC-|UGRD-|ACAD)'
+    """)
+    _disciplines = {(row.institution, row.discipline): row for row in cursor.fetchall()}
+
+    # Metadata for sending side and receiving side courses, indexed by rule_key
     cursor.execute("""
     select course_id, offer_nbr, rule_id from source_courses
     """)
@@ -101,6 +130,7 @@ def destination_department(arg: Any) -> str:
   department = detail = ''
   dest_institution = rule_key[6:11]
   receiving_courses = _receiving_courses[rule_key]
+
   if not receiving_courses:
     raise ValueError(f'{rule_key}: No Receiving Courses')
 
@@ -110,20 +140,38 @@ def destination_department(arg: Any) -> str:
 
   real_subjects = {c.course_str.split(' ')[0] for c in real_courses}
   departments = {_discipline_to_department[dest_institution, subj] for subj in real_subjects}
-  print(f'{dest_institution=} {admin_courses=} {real_courses=} {real_subjects=} {departments=}')
-  match (len(admin_courses), len(real_courses)):
-    case (0, _):
-      # All real
-      if len(real_subjects) == 1:
-        ...
-    case (_, 0):
-      # All admin
+
+  # Rare, but observed case: a “real” course not offered by any department
+  if real_subjects:
+    if not departments:
       department = 'Admin'
-      s = ' is' if len(admin_courses) == 1 else 's are all'
-      detail = f'Receiving course{s} BKCR or MESG'
-    case (_, _):
-      # Mixed
-      ...
+      detail = f'No department for {', '.join(real_subjects)}'
+
+    # If there is one department, the job is done, even if there are also admin courses.
+    elif len(departments) == 1:
+      department = departments.pop()
+      detail = _department_names[dest_institution, department]
+
+    # Rare (nonexistent?) case: multiple receiving departments
+    elif len(departments) > 1:
+      department = 'Admin'
+      detail = f'Multiple receiving departments: {', '.join(departments)}'
+
+  else:
+    # Receiving side is only Admin
+    admin_subjects = {c.course_str.split(' ')[0] for c in admin_courses}
+    departments = {_discipline_to_department[dest_institution, subj] for subj in admin_subjects}
+
+    # The subject might be for a real discipline ('BIO 499')
+    if len(departments) == 1:
+      department = departments.pop()
+      # FIX THIS: it’s picking up admin “departments” like QCC01
+      detail = _department_names[dest_institution, department]
+
+    # Look at the sending cuny_subject to see if there is a match at the receiving side
+    else:
+      department = 'Admin'
+      detail = 'Look at the sending course cuny_subject and/or CIP code'
 
   return {'rule_key': rule_key, 'department': department, 'detail': detail}
 
@@ -138,7 +186,14 @@ if __name__ == '__main__':
     arg = input('Rule ID or Rule Key? ')
 
   if arg.lower() == 'all':
-    print('not yet')
+    # All rule_keys where QNS01 or QCC01 is the receiving institution
+    for rule_key in _all_to_keys:
+      try:
+        dd = destination_department(rule_key)
+        print(f'{rule_key}: {dd['department']:5} {dd['detail']}', file=sys.stderr)
+      except KeyError:
+        print(f'{rule_key}: KeyErr', file=sys.stderr)
+
   else:
     try:
       rule_id = int(arg)
