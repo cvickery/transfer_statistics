@@ -99,7 +99,31 @@ def destination_department(arg: Any) -> str:
   # If department is found, detail is the department name. Otherwise, department is 'Admin' and
   # detail is an explanation.
   department = detail = ''
-  # Can the department be determined from the destination courses for the rule?
+  dest_institution = rule_key[6:11]
+  receiving_courses = _receiving_courses[rule_key]
+  if not receiving_courses:
+    raise ValueError(f'{rule_key}: No Receiving Courses')
+
+  admin_courses, real_courses = set(), set()
+  for c in receiving_courses:
+    (admin_courses if c.is_mesg or c.is_bkcr else real_courses).add(c)
+
+  real_subjects = {c.course_str.split(' ')[0] for c in real_courses}
+  departments = {_discipline_to_department[dest_institution, subj] for subj in real_subjects}
+  print(f'{dest_institution=} {admin_courses=} {real_courses=} {real_subjects=} {departments=}')
+  match (len(admin_courses), len(real_courses)):
+    case (0, _):
+      # All real
+      if len(real_subjects) == 1:
+        ...
+    case (_, 0):
+      # All admin
+      department = 'Admin'
+      s = ' is' if len(admin_courses) == 1 else 's are all'
+      detail = f'Receiving course{s} BKCR or MESG'
+    case (_, _):
+      # Mixed
+      ...
 
   return {'rule_key': rule_key, 'department': department, 'detail': detail}
 
