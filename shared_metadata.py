@@ -5,7 +5,7 @@ import psycopg
 from collections import namedtuple
 from psycopg.rows import namedtuple_row
 
-Metadata = namedtuple('Metadata', 'institution course_str '
+Metadata = namedtuple('Metadata', 'institution course_str cuny_subject '
                                   'is_ugrad is_active is_mesg is_bkcr is_unknown')
 metadata = dict()
 real_credit_courses = set()  # Members are (course_id, offer_nbr)
@@ -42,7 +42,7 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
 
     # Cache metadata for all cuny courses, and create set of real courses.
     cursor.execute("""
-    select course_id, offer_nbr, institution, discipline, catalog_number,
+    select course_id, offer_nbr, institution, discipline, catalog_number, cuny_subject,
           career ~* '^U' as is_ugrad,
           course_status = 'A' as is_active,
           designation in ('MNL', 'MLA') as is_mesg,
@@ -53,6 +53,7 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
       course_str = f'{row.discipline.strip()} {row.catalog_number.strip()}'
       metadata[(row.course_id, row.offer_nbr)] = Metadata._make([row.institution,
                                                                 course_str,
+                                                                row.cuny_subject,
                                                                 row.is_ugrad,
                                                                 row.is_active,
                                                                 row.is_mesg,
