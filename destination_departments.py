@@ -39,6 +39,7 @@ _disciplines = dict()
 _department_names = dict()
 _cuny_subjects = defaultdict(set)  # departments that offer a cuny subject at an institution
 _cip_codes = defaultdict(set)  # departments that offer a cip_code at an institution.
+_cip_area_names = dict()
 _sending_courses = defaultdict(set)
 _receiving_courses = defaultdict(set)
 
@@ -70,6 +71,12 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
     _cuny_subjects = {(row.institution, row.cuny_subject): row.department for row in rows}
     _cip_codes = {(row.institution, row.cip_code[0:2]): row.department for row in rows}
 
+    cursor.execute("""
+    select cip_code, cip_title
+      from cip2020codes
+    """)
+    _cip_area_names = {row.cip_code: row.cip_title.strip('.').title().replace(' And ', ' and ')
+                       for row in cursor}
     # # Verify that a single discipline always maps to a single department
     # # This code was used when _discipline_to_department was a defaultdict(set)
     # # (Whatever happened to shared disciplines??)
@@ -116,7 +123,8 @@ with psycopg.connect('dbname=cuny_curriculum') as conn:
 # -------------------------------------------------------------------------------------------------
 def oxfordize(source_list: list, list_type: str) -> str:
   """Apply oxford-comma pattern to a list of strings."""
-  sentence = ', '.join([' '.join(q) if isinstance(q, tuple) else q for q in source_list])
+  sentence = ', '.join([' '.join(q) if isinstance(q, tuple) else q.replace(',', '__$__')
+                        for q in source_list])
   if comma_count := sentence.count(','):
     assert list_type.lower() in ['and', 'or'], f'{sentence=} {comma_count=} {list_type=}'
     conjunction_str = f' {list_type}'
@@ -126,7 +134,7 @@ def oxfordize(source_list: list, list_type: str) -> str:
       last_comma = sentence.rindex(',') + 1
       return sentence[:last_comma] + conjunction_str + sentence[last_comma:]
   else:
-    return sentence
+    return sentence.replace('__$__', ',')
 
 
 # destination_department()
@@ -138,9 +146,9 @@ def destination_department(arg: Any) -> str:
   else:
     rule_key = arg
 
-  # If department is found, detail is the department name. Otherwise, department is 'Admin' and
-  # detail is an explanation.
-  department = detail = ''
+  # If department is found, details is the department name. Otherwise, department is 'Admin' and
+  # details is an explanation.
+  department = details = ''
   dest_institution = rule_key[6:11]
   receiving_courses = _receiving_courses[rule_key]
 
@@ -164,17 +172,22 @@ def destination_department(arg: Any) -> str:
   if real_subjects:
     if not departments:
       department = 'Admin'
-      detail = f'No department for {oxfordize(real_subjects, 'or')}'
+      details = f'No department for {oxfordize(real_subjects, 'or')}'
 
     # If there is one department, the job is done, even if there are also admin courses.
     elif len(departments) == 1:
-      department = departments.pop()
-      detail = _department_names[dest_institution, department]
+      try:
+        department = departments.pop()
+        details = _department_names[dest_institution, department]
+      except KeyError:
+        # Got a department, but it is not in cuny_departments with status 'A'
+        details = f'{department} not found'
+        department = 'Admin'
 
     # Rare (nonexistent?) case: multiple receiving departments
     elif len(departments) > 1:
       department = 'Admin'
-      detail = f'Multiple receiving departments: {oxfordize(departments, 'and')}'
+      details = f'Multiple receiving departments: {oxfordize(departments, 'and')}'
 
   else:
     # Receiving side is only Admin, but the subject might be a real discipline ('BIOL 499')
@@ -187,7 +200,11 @@ def destination_department(arg: Any) -> str:
       pass
     if len(departments) == 1:
       department = departments.pop()
-      detail = _department_names[dest_institution, department]
+      try:
+        details = _department_names[dest_institution, department]
+      except KeyError:
+        details = f'{department} not found'
+        department = 'Admin'
 
     # Look at the sending cuny_subject to see if there is a match at the receiving side
     else:
@@ -208,70 +225,92 @@ def destination_department(arg: Any) -> str:
         case 1:
           # Ideal case: there is one department that should handle it
           department = receiving_departments.pop()
-          detail = f'Offers courses with same CUNY subject ({sending_subject})'
+          details = f'Offers courses with same CUNY subject ({sending_subject})'
 
         case 0:
           # No match on cuny_subject; try CIP code area
           department = 'Admin'
 
           # Get sending department’s cip code
-          sending_cip_codes = set()
+          sending_cip_codes_set = set()
           for sending_course in _sending_courses[rule_key]:
             try:
               sending_discipline = sending_course.course_str.split(' ')[0]
-              sending_cip_codes.add(_disciplines[sending_course.institution,
-                                                 sending_discipline].cip_code[0:2])
+              sending_cip_codes_set.add(_disciplines[sending_course.institution,
+                                        sending_discipline].cip_code[0:2])
             except KeyError:
               pass
+          sending_cip_codes = [f'{c} ({_cip_area_names[c]})' for c in sending_cip_codes_set
+                               if len(c) > 1]
           # Find receiving departments with same cip code
           receiving_departments = set()
           for sending_cip_code in sending_cip_codes:
-            receiving_departments.add(_cip_codes[dest_institution, sending_cip_code])
+            try:
+              receiving_departments.add(_cip_codes[dest_institution, sending_cip_code])
+            except KeyError:
+              pass
+
           match len(receiving_departments):
             case 0:
-              detail = (f'No department at {dest_institution[0:3]} '
-                        f'offers courses in CUNY subject {sending_subject} or CIP area '
-                        f'{oxfordize(sending_cip_codes, 'or')}')
+              if sending_cip_codes:
+                details = (f'No department found for CUNY subject {sending_subject} or CIP code'
+                           f' area {oxfordize(sending_cip_codes, 'or')}')
+              else:
+                details = (f'No department found for CUNY subject {sending_subject} and no CIP code'
+                           f' area available for matching')
             case 1:
-              detail = (f'No department offers courses in CUNY subject {sending_subject}, '
-                        f'but {receiving_departments.pop()} offers courses in CIP area '
-                        f'{oxfordize(sending_cip_codes, 'or')}')
+              department = receiving_departments.pop()
+              details = (f'No department found for CUNY subject {sending_subject}, '
+                         f'but {department} offers courses in CIP code area '
+                         f'{oxfordize(sending_cip_codes, 'or')}')
             case _:
-              detail = (f'No department offers courses in CUNY subject {sending_subject}, '
-                        f'but {oxfordize(receiving_departments, 'and')} offer courses in CIP area '
-                        f'{oxfordize(sending_cip_codes, 'or')}')
+              details = (f'No department found for CUNY subject {sending_subject}, '
+                         f'but {oxfordize(receiving_departments, 'and')} offer courses in CIP code '
+                         f'area {oxfordize(sending_cip_codes, 'or')}')
 
         case _:
           # Multiple cuny subject matches
           department = 'Admin'
           departments = oxfordize(receiving_departments, 'and')
-          detail = f'{departments} offer courses in {sending_subject}'
+          details = f'{departments} offer courses in {sending_subject}'
 
-  return {'rule_key': rule_key, 'department': department, 'detail': detail}
+  return {'rule_key': rule_key, 'department': department, 'details': details}
 
 
 if __name__ == '__main__':
 
-  # prompt for transfer_rules.rule_key or transfer_rules.id and show the institution and dept.
+  # prompt for transfer_rules.rule_key, transfer_rules.id, or list of destination institutions.
+  # Show the deparment and details for each rule.
   rule_id = rule_key = None
   if len(sys.argv) > 1:
-    arg = sys.argv[1]
+    args = sys.argv[1:]
   else:
-    arg = input('Rule ID or Rule Key? ')
+    args = input('Rule ID, Rule Key, or list of destinations: ')
 
-  if arg.lower() == 'all':
-    # All rule_keys where QNS01 or QCC01 is the receiving institution
-    for rule_key in _all_to_keys:
-      try:
-        dd = destination_department(rule_key)
-        print(f'{rule_key:22} {dd['department']:12} {dd['detail']}', file=sys.stderr)
-      except KeyError as err:
-        print(f'{rule_key:20} {err}', file=sys.stderr)
-
-  else:
-    try:
-      rule_id = int(arg)
-      print(destination_department(rule_id))
-    except ValueError:
-      rule_key = arg
+  try:
+    rule_id = int(args[0])
+    print(destination_department(rule_id))
+  except ValueError:
+    rule_key = args[0]
+    if ':' in rule_key:
       print(destination_department(rule_key))
+    else:
+      with psycopg.connect('dbname=cuny_curriculum') as conn:
+        with conn.cursor(row_factory=namedtuple_row) as cursor:
+          institutions = ' '.join(args).replace(',', ' ').split()
+          for institution in institutions:
+            if institution.lower() == 'all':
+              and_clause = ''
+            else:
+              institution = f'{institution.upper()[0:3]}01'
+              and_clause = f"and rule_key ~* ':{institution}:'"
+            cursor.execute(f"""
+            select rule_key from transfer_rules
+            where rule_key !~* ':(GRD|LAW|MED)01:'
+            {and_clause}
+            order by rule_key
+            """)
+            print(f'\n{institution.upper()}: {cursor.rowcount:,} rules')
+            for row in cursor:
+              dd = destination_department(row.rule_key)
+              print(f'{dd['rule_key']:20} {dd['department']:10} {dd['details']}')
