@@ -311,6 +311,14 @@ if __name__ == '__main__':
             order by rule_key
             """)
             print(f'\n{institution.upper()}: {cursor.rowcount:,} rules')
-            for row in cursor:
+            rows = cursor.fetchall()
+            for row in rows:
               dd = destination_department(row.rule_key)
+              cursor.execute("""
+              insert into rule_departments values(%s, %s, %s)
+              on conflict (rule_key)
+              do update set
+                department = excluded.department,
+                details = excluded.details;
+              """, (dd['rule_key'], dd['department'], dd['details']))
               print(f'{dd['rule_key']:20} {dd['department']:10} {dd['details']}')
