@@ -312,6 +312,10 @@ if __name__ == '__main__':
             """)
             print(f'\n{institution.upper()}: {cursor.rowcount:,} rules')
             rows = cursor.fetchall()
+            # create table rule_departments (
+            #   rule_key text primary key,
+            #   department text,
+            #   details text)
             for row in rows:
               dd = destination_department(row.rule_key)
               cursor.execute("""
