@@ -285,7 +285,7 @@ if __name__ == '__main__':
   if len(sys.argv) > 1:
     args = sys.argv[1:]
   else:
-    args = input('Rule ID, Rule Key, or list of destinations: ')
+    args = input('Rule ID, Rule Key, or list of destinations: ').split()
 
   try:
     rule_id = int(args[0])
@@ -312,12 +312,16 @@ if __name__ == '__main__':
             """)
             print(f'\n{institution.upper()}: {cursor.rowcount:,} rules')
             rows = cursor.fetchall()
-            # create table rule_departments (
-            #   rule_key text primary key,
-            #   department text,
-            #   details text)
+            cursor.execute("""
+            drop table if exists rule_departments;
+            create table rule_departments (
+              rule_key text primary key,
+              department text,
+              details text)
+            """)
             for row in rows:
               dd = destination_department(row.rule_key)
+              # print(f'{dd['rule_key']:20} {dd['department']:10} {dd['details']}')
               cursor.execute("""
               insert into rule_departments values(%s, %s, %s)
               on conflict (rule_key)
@@ -325,4 +329,3 @@ if __name__ == '__main__':
                 department = excluded.department,
                 details = excluded.details;
               """, (dd['rule_key'], dd['department'], dd['details']))
-              print(f'{dd['rule_key']:20} {dd['department']:10} {dd['details']}')
