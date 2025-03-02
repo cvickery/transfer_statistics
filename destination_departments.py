@@ -1,7 +1,7 @@
 #! /usr/local/bin/python3
 """Given a rule, what department should review it?
 
-  Create a db table once here, and let the app create a dict from it at run time.
+  Create the rule_dept db table once here, and let the app create a dict from it at run time.
 
   First divide the destination course set into administrative and non-administrative course sets.
     If the non-administrative set is all one discipline
@@ -279,8 +279,12 @@ def destination_department(arg: Any) -> str:
 
 if __name__ == '__main__':
 
-  # prompt for transfer_rules.rule_key, transfer_rules.id, or list of destination institutions.
-  # Show the deparment and details for each rule.
+  """Prompt for transfer_rules.rule_key, transfer_rules.id, or list of destination institutions.
+     Show the deparment and details for each rule.
+
+     If 'all' is in the list of destination institutions, build the rule_department table for all
+     colleges.
+  """
   rule_id = rule_key = None
   if len(sys.argv) > 1:
     args = sys.argv[1:]
@@ -329,3 +333,6 @@ if __name__ == '__main__':
                 department = excluded.department,
                 details = excluded.details;
               """, (dd['rule_key'], dd['department'], dd['details']))
+          cursor.execute("""
+          update updates set update_date = current_date where table_name = 'rule_departments'
+          """)
