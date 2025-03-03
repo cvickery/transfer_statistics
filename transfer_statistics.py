@@ -25,7 +25,7 @@ Dictionaries
     Value   Natural language text
   metadata
     Key     (course_id, offer_nbr)
-    Values  Metadata(institution, course_str,
+    Values  Metadata(institution, course_str, cuny_subject,
                      is_undergraduate, is_active, is_mesg, is_bkcr, is_unknown)
             .flags_str is textual representation of the five booleans
 
@@ -37,9 +37,8 @@ import psycopg
 import time
 
 from adjustcolwidths import adjust_widths
-from transfer_by_subjects import create_sender_subject_workbook
 from collections import defaultdict, namedtuple
-from datetime import datetime
+from datetime import date
 from openpyxl import Workbook
 from openpyxl.styles import NamedStyle, Alignment, Font
 from pathlib import Path
@@ -52,6 +51,10 @@ from recordclass import recordclass
 from shared_metadata import Metadata, metadata, real_credit_courses
 
 DEBUG = os.getenv('DEBUG_TRANSFER_STATISTICS')
+if age_limit := os.getenv('AGE_LIMIT'):
+  age_limit = int(age_limit)
+else:
+  age_limit = 7
 
 
 # elapsed()
@@ -67,7 +70,7 @@ if __name__ == '__main__':
 
   session_start = time.time()
   log_file = open('transfer_statistics.log', 'w')
-  report_file = open(f'./reports/{datetime.today().isoformat()[0:10]}_report.txt', 'w')
+  report_file = open(f'./reports/{date.today().isoformat()[0:10]}_report.txt', 'w')
 
   # Check CUNYfirst data is current
   latest_query = None
@@ -82,30 +85,40 @@ if __name__ == '__main__':
         latest_query = query_file
         latest_timestamp = this_timestamp
   file_date = f'{time.strftime("%Y-%m-%d", time.localtime(latest_timestamp))}'
-  file_age = (datetime.today() - datetime.fromisoformat(file_date)).days
-  if file_age > 7:
-    exit(f'CUNYfirst info from ({latest_query}) file is {file_age} days old')
+  file_age = (date.today() - date.fromisoformat(file_date)).days
+  if file_age > age_limit:
+    exit(f'CUNYfirst info from ({latest_query}) file is {file_age} days old. Limit is {age_limit} '
+         f'days.')
   s = '' if file_age == 1 else 's'
   print(f'CUNYfirst query ({latest_query}) is {file_age} day{s} old.')
 
   # Initialize From Curriculum Database
   # ===============================================================================================
 
-  # A SrcCourse is one that has one or more xfer rules that awards bkcr
+  # A SrcCourse is one that has one or more xfer rules (that awards bkcr?)
   SrcCourse = namedtuple('SrcCourse', 'src_institution, course_str, rules')
   src_courses = defaultdict(dict)  # Index by [dst_institution][src_course_id, src_offer_nbr]
 
   with psycopg.connect('dbname=cuny_curriculum') as conn:
     with conn.cursor(row_factory=namedtuple_row) as cursor:
 
-      # Be sure rule descriptions are up to date
-      cursor.execute("select update_date from updates where table_name = 'rule_descriptions'")
-      update_date = cursor.fetchone().update_date
-      days = (datetime.today() - datetime.fromisoformat(update_date)).days
-      if days > 7:
-        exit(f'rule_descriptions have not been updated in {days} days.')
-      s = '' if days == 1 else 's'
-      print(f'Rule descriptions were updated {days} day{s} ago.')
+      # Be sure rule descriptions and departments are up to date
+      cursor.execute("""
+      select table_name, update_date
+        from updates
+       where table_name in ('rule_descriptions', 'rule_departments')
+      """)
+      dates_ok = True
+      for row in cursor:
+        update_date = row.update_date
+        delta = date.today() - update_date  # datetime.fromisoformat(update_date)).days
+        if delta.days > age_limit:
+          print(f'{row.table_name} has not been updated in {delta.days} days.')
+          dates_ok = False
+        s = '' if delta.days == 1 else 's'
+        print(f'{row.table_name} was updated {delta.days} day{s} ago.')
+      if not dates_ok:
+        exit('Update and try again')
 
       print('Collect Transfer Rules')
 
@@ -140,12 +153,14 @@ if __name__ == '__main__':
       # Cache all rule decriptions, previously stored in the cuny_curriculum db.
       rule_descriptions = defaultdict(str)
       cursor.execute("""
-      select rule_key, description
-      from rule_descriptions
+      select r.rule_key, r.description, d.department, d.details
+      from rule_descriptions r, rule_departments d
+      where r.rule_key = d.rule_key
       """)
       for row in cursor:
-        rule_descriptions[row.rule_key] = row.description
-      print(f'  {len(rule_descriptions):10,} Rule Descriptions\t{elapsed(session_start)}')
+        rule_descriptions[row.rule_key] = row
+      print(f'  {len(rule_descriptions):10,} Rule Descriptions & Departments\t'
+            f'{elapsed(session_start)}')
 
   # Process latest transfer evaluations query file.
   # =============================================================================================
@@ -190,8 +205,8 @@ if __name__ == '__main__':
     return defaultdict(xfer_stats_maker)
 
   xfer_stats = defaultdict(xfer_stats_factory)
-  first_post = datetime.today()
-  last_post = datetime(1900, 1, 1)
+  first_post = date.today()
+  last_post = date(1900, 1, 1)
   first_term = 9999
   last_term = 0
   with open(latest_query, newline='', errors='replace') as query_file:
@@ -215,7 +230,7 @@ if __name__ == '__main__':
 
         try:
           m, d, y = row.posted_date.split('/')
-          posted_date = datetime(int(y), int(m), int(d))
+          posted_date = date(int(y), int(m), int(d))
           if posted_date > last_post:
             last_post = posted_date
           if posted_date < first_post:
@@ -243,9 +258,8 @@ if __name__ == '__main__':
           xfer_counts[dst_institution].not_bkcr += 1
           continue
 
-        dst_rule_descriptions = [f'{rule_descriptions[rule_key]}|{rule_key}'
-                                 for rule_key
-                                 in src_courses[dst_institution][src_course].rules]
+        dst_rule_descriptions = [rule_descriptions[rule_key]  # TESTING
+                                 for rule_key in src_courses[dst_institution][src_course].rules]
 
         # Log cases where the subject and catalog number don't match current cuny_courses info.
         # -------------------------------------------------------------------------------------
@@ -272,7 +286,7 @@ if __name__ == '__main__':
         except KeyError:
           # Gotta fake the metadata
           # discipline catalog_number is_ugrad is_active is_mesg is_bkcr, is_unknown
-          dst_meta = Metadata._make([dst_institution, dst_course_str,
+          dst_meta = Metadata._make([dst_institution, dst_course_str, 'no subject',
                                      False, False, False, False, True])
 
         # Log cases where the subject and catalog number don't match current cuny_courses info.
@@ -346,7 +360,8 @@ if __name__ == '__main__':
   highlighted = Font(bold=True, color='800080')
 
   headings = ['Sending College', 'Sending Course', 'Students', 'Repeats', 'Sending Cr',
-              'Real', 'BKCR', '% Real', 'Receiving Courses', 'Rule Descriptions', 'Rule Keys']
+              'Real', 'BKCR', '% Real', 'Receiving Courses', 'Rule Descriptions', 'Rule Keys',
+              'Department', 'Department Name or Admin Details']
 
   for dst_institution in sorted(xfer_counts.keys()):
     print(f'\n{dst_institution[0:3]}', file=log_file)
@@ -396,14 +411,20 @@ if __name__ == '__main__':
                             f'({institution_dict[row_key].courses[course].count:,})')
       ws.cell(ws_row_index, 9, '\n'.join(courses_list)).style = 'left_top'
 
-      rule_descriptions = []
       rule_keys = []
+      rule_descriptions = []
+      rule_departments = set()
+      rule_details = set()
+      # row_key is a (course_id, offer_nbr) tuple
       for rule in institution_dict[row_key].rules:
-        rule_description, rule_key = rule.split('|')
-        rule_descriptions.append(rule_description)
-        rule_keys.append(rule_key)
+        rule_keys.append(rule.rule_key)
+        rule_descriptions.append(rule.description)
+        rule_departments.add(rule.department)
+        rule_details.add(rule.details)
       ws.cell(ws_row_index, 10, '\n'.join(rule_descriptions)).style = 'left_top'
       ws.cell(ws_row_index, 11, '\n'.join(rule_keys)).style = 'left_top'
+      ws.cell(ws_row_index, 12, '\n'.join(rule_departments)).style = 'left_top'
+      ws.cell(ws_row_index, 13, '\n'.join(rule_details)).style = 'left_top'
 
       if do_highlight:
         for col_index in range(1, len(headings) + 1):
@@ -414,26 +435,11 @@ if __name__ == '__main__':
   # Clean up
 
   del wb['Sheet']
-  adjust_widths(wb, [8.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 20.0, 150.0, 20.0])
-  wb.save(f'./reports/{datetime.today().isoformat()[0:10]}_transfer_statistics.xlsx')
+  adjust_widths(wb, [8.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 20.0, 150.0, 20.0, 20.0, 100.0])
+  wb.save(f'./reports/{date.today().isoformat()[0:10]}_transfer_statistics.xlsx')
 
   print('\nReport time\t', elapsed(report_start))
   print('Total time\t', elapsed(session_start))
 
   log_file.close()
   report_file.close()
-
-  print('\nGenerate Institution Reports')
-  for dst_institution in sorted(xfer_counts.keys()):
-    print(f'\nProcessing {dst_institution}')
-    institution_dict = {key: xfer_stats[dst_institution][key]
-                        for key in xfer_stats[dst_institution]}
-
-    # Get workbook for this institution
-    wb = create_sender_subject_workbook(dst_institution, institution_dict)
-    try:
-      wb.save(f'./reports/{datetime.today().isoformat()[0:10]}_'
-              f'{dst_institution}_transfer_statistics.xlsx')
-      print(f'Created workbook for {dst_institution}')
-    except IndexError:
-      print(f'No active sheets for {dst_institution}')
