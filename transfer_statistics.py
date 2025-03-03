@@ -37,10 +37,10 @@ import psycopg
 import time
 
 from adjustcolwidths import adjust_widths
+from cell_formatting import center_top, left_top, counter_format, decimal_format, highlighted
 from collections import defaultdict, namedtuple
 from datetime import date
 from openpyxl import Workbook
-from openpyxl.styles import NamedStyle, Alignment, Font
 from pathlib import Path
 from psycopg.rows import namedtuple_row
 from recordclass import recordclass
@@ -336,28 +336,10 @@ if __name__ == '__main__':
 
   wb = Workbook()
   # Cell formatting options
-  bold = Font(bold=True)
-
-  center_top = NamedStyle('center_top')
-  center_top.alignment = Alignment(horizontal='center', vertical='top', wrapText=True)
-  center_top.font = bold
   wb.add_named_style(center_top)
-
-  left_top = NamedStyle('left_top')
-  left_top.alignment = Alignment(horizontal='left', vertical='top', wrapText=True)
   wb.add_named_style(left_top)
-
-  counter_format = NamedStyle('counter_format')
-  counter_format.alignment = Alignment(vertical='top')
-  counter_format.number_format = '#,##0'
   wb.add_named_style(counter_format)
-
-  decimal_format = NamedStyle('decimal_format')
-  decimal_format.alignment = Alignment(vertical='top')
-  decimal_format.number_format = '0.0'
   wb.add_named_style(decimal_format)
-
-  highlighted = Font(bold=True, color='800080')
 
   headings = ['Sending College', 'Sending Course', 'Students', 'Repeats', 'Sending Cr',
               'Real', 'BKCR', '% Real', 'Receiving Courses', 'Rule Descriptions', 'Rule Keys',
