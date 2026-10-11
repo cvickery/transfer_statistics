@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 """Count transferred courses and how many credits transfer as blanket credits (bkcr).
 
 This code is an alternative to count_transfers.py, which simply ranks all courses transferred by

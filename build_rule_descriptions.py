@@ -1,4 +1,8 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
+
+#  DOES NOT HANDLE INVALID min_gpa
+#  Rather than fix it, use mk_descriptions from the rule_descriptions project.
+
 """ Format a transfer rule into a text string. Along the way, build a dict of the parts for possible
     use in building a table row with the same info:
 
@@ -117,6 +121,8 @@ def and_list(items):
 # main()
 # -------------------------------------------------------------------------------------------------
 if __name__ == "__main__":
+
+  exit('Use the descriptions from the rule_descriptions project instead of this.')
   Alias = namedtuple('Alias', """ course_id
                                   offer_nbr
                                   institution
@@ -246,4 +252,5 @@ if __name__ == "__main__":
        where table_name = 'rule_descriptions'
       """)
       print('Generate Complete', elapsed(generate_start))
+
   exit(elapsed(session_start))

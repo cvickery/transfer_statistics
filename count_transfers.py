@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 """ Count how often students transfer courses to a college.
 """
 

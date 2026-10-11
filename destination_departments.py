@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 """Given a rule, what department should review it?
 
   Create the rule_dept db table once here, and let the app create a dict from it at run time.

@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 """ What is the relationship between BKCR, RD, min_credits, max_credits, and credit_source?
     See mesg_bkcr.out for results. Basically: nothing useful!
 """

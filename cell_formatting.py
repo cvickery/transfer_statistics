@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 from openpyxl.styles import Alignment, NamedStyle, Font
 
 # Cell formatting options

@@ -1,4 +1,4 @@
-#! /usr/local/bin/python3
+#! /usr/bin/env python3
 
 from adjustcolwidths import adjust_widths
 from copy import copy
